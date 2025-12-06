@@ -1,0 +1,16 @@
+appId: com.example.vulnerable-list-generator
+productName: 易损清单生成工具
+copyright: Copyright © 2025 example
+win:
+  target:
+    - portable
+  icon: build/icon.ico
+  requestedExecutionLevel: requireAdministrator
+files:
+  - "**/*"
+exclude:
+  - "*.yml"
+  - "node_modules/**/node_modules"
+  - "node_modules/.bin"
+  - "node_modules/electron-builder/**"
+  - "node_modules/7zip-bin/**"

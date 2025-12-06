@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>易损清单生成工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #2c3e50;
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tab {
+            padding: 15px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            flex: 1;
+            text-align: center;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .tab.active {
+            border-bottom-color: #3498db;
+            color: #3498db;
+            font-weight: bold;
+        }
+        .tab-content {
+            display: none;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .controls {
+            display: flex;
+            margin-bottom: 20px;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button.secondary {
+            background-color: #95a5a6;
+        }
+        button.secondary:hover {
+            background-color: #7f8c8d;
+        }
+        button.danger {
+            background-color: #e74c3c;
+        }
+        button.danger:hover {
+            background-color: #c0392b;
+        }
+        .table-container {
+            overflow-x: auto;
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+        .input-group label {
+            min-width: 80px;
+            font-weight: bold;
+        }
+        .input-group input, .input-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            flex: 1;
+        }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-white {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-black {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .unknown-section {
+            margin-top: 20px;
+            padding: 20px;
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            border-radius: 5px;
+        }
+        .result-section {
+            margin-top: 20px;
+        }
+        .file-info {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #e3f2fd;
+            border-radius: 5px;
+        }
+        .summary {
+            margin: 10px 0;
+            padding: 15px;
+            background-color: #e8f5e8;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>易损清单生成工具</h1>
+        
+        <div class="tabs">
+            <button class="tab active" data-tab="generate">生成易损清单</button>
+            <button class="tab" data-tab="maintain">设备清单维护</button>
+        </div>
+        
+        <!-- 设备清单维护 -->
+        <div id="maintain" class="tab-content">
+            <div class="input-group">
+                <label>物料编号:</label>
+                <input type="text" id="materialId">
+                <label>物料描述:</label>
+                <input type="text" id="description">
+            </div>
+            <div class="input-group">
+                 <label>机型:</label>
+                <input type="text" id="model">
+                <label>备件数:</label>
+                <input type="number" id="spareCount" min="0">
+                <label>单位:</label>
+                <input type="text" id="unit">
+               
+            </div>
+            <div class="input-group">
+                <label>备注:</label>
+                <input type="text" id="remark">
+                <label>状态:</label>
+                <select id="status">
+                    <option value="白名单">白名单</option>
+                    <option value="黑名单">黑名单</option>
+                </select>
+            </div>
+            <div class="controls">
+                <button id="addDevice">添加设备</button>
+                <button id="saveDevices" class="secondary">保存设备</button>
+                <button id="loadDevices" class="secondary">刷新设备</button>
+                <button id="importBlacklist" class="secondary">批量导入黑名单</button>
+                <button id="importWhitelist" class="secondary">批量导入白名单</button>
+            </div>
+            <div class="input-group" style="margin: 15px 0;">
+                <label>设备类型:</label>
+                <select id="deviceTypeFilter">
+                    <option value="all">全部设备</option>
+                    <option value="白名单" selected>白名单</option>
+                    <option value="黑名单">黑名单</option>
+                </select>
+            </div>
+            
+            <div class="input-group" style="margin: 15px 0;">
+                <label>搜索物料编号:</label>
+                <input type="text" id="materialIdSearch" placeholder="输入物料编号进行搜索">
+            </div>
+            
+            <div class="table-container">
+                <table id="deviceTable">
+                    <thead>
+                        <tr>
+                            <th>物料编号</th>
+                            <th>物料描述</th>
+                            <th>备件数</th>
+                            <th>单位</th>
+                            <th>机型</th>
+                            <th>备注</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="deviceTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- 生成易损清单 -->
+        <div id="generate" class="tab-content active">
+            <div class="controls">
+                <button id="selectFolder">选择项目文件夹</button>
+                <button id="processFiles">处理文件</button>
+                <button id="exportList" class="secondary" disabled>导出易损清单</button>
+            </div>
+            
+            <div id="fileInfo" class="file-info" style="display: none;"></div>
+            
+            <div class="summary" id="summary" style="display: none;"></div>
+            
+            <div class="result-section" id="matchedSection" style="display: none;">
+                <h3>白名单已匹配设备</h3>
+                <div class="table-container">
+                    <table id="matchedTable">
+                        <thead>
+                            <tr>
+                                <th>ERP编号</th>
+                                <th>物料描述</th>
+                                <th>机型</th>
+                            </tr>
+                        </thead>
+                        <tbody id="matchedTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="unknown-section" id="unknownSection" style="display: none;">
+                <h3>未识别设备 (请选择是否易损)</h3>
+                <div class="table-container">
+                    <table id="unknownTable">
+                        <thead>
+                            <tr>
+                                <th>ERP编号</th>
+                                <th>物料描述</th>
+                                <th>备件数</th>
+                                <th>单位</th>
+                                <th>机型</th>
+                                <th>备注</th>
+                                <th>是否易损</th>
+                            </tr>
+                        </thead>
+                        <tbody id="unknownTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="result-section" id="resultSection" style="display: none;">
+                <h3>易损清单结果</h3>
+                <div class="table-container">
+                    <table id="resultTable">
+                        <thead>
+                            <tr>
+                                <th>ERP编号</th>
+                                <th>物料编号</th>
+                                <th>备件数</th>
+                                <th>单位</th>
+                                <th>机型</th>
+                                <th>备注</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
