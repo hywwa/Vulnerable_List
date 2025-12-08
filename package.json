@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder"
+    "build": "npx electron-packager . 易损清单生成工具 --platform=win32 --arch=x64 --out=dist --overwrite"
   },
   "keywords": [
     "electron",

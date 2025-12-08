@@ -591,6 +591,30 @@ async function processFiles() {
 function renderUnknownTable() {
     unknownTableBody.innerHTML = '';
     
+    // 添加多选样式
+    const style = document.createElement('style');
+    style.textContent = `
+        /* 增强多选下拉框的选中效果 */
+        select[multiple] option:checked {
+            background-color: #3498db !important;
+            color: white !important;
+        }
+        select[multiple] {
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 5px;
+            outline: none;
+            cursor: pointer;
+        }
+        select[multiple]:focus {
+            border-color: #3498db;
+            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+        }
+    `;
+    document.head.appendChild(style);
+    
     unknownDevices.forEach((device, index) => {
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -598,7 +622,16 @@ function renderUnknownTable() {
             <td><input type="text" id="materialId_${index}" value="${device.description || device.erpCode}" placeholder="物料描述" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 300px; min-width: 200px;"></td>
             <td><input type="number" id="spareCount_${index}" value="${device.spareCount}" min="0" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 80px;"></td>
             <td><input type="text" id="unit_${index}" value="${device.unit}" placeholder="单位" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 80px;"></td>
-            <td><input type="text" id="model_${index}" value="${device.model}" placeholder="机型" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 100px;"></td>
+            <td>
+                <select id="model_${index}" multiple="multiple" size="5" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 150px; height: auto;">
+                    <option value="系统" ${device.model === '系统' ? 'selected' : ''}>系统</option>
+                    <option value="摆渡车" ${device.model === '摆渡车' ? 'selected' : ''}>摆渡车</option>
+                    <option value="运输车" ${device.model === '运输车' ? 'selected' : ''}>运输车</option>
+                    <option value="砖机" ${device.model === '砖机' ? 'selected' : ''}>砖机</option>
+                    <option value="辅机" ${device.model === '辅机' ? 'selected' : ''}>辅机</option>
+                </select>
+                <small style="display: ${device.isVulnerable ? 'block' : 'none'}; color: #666; margin-top: 5px;">可按住Ctrl键多选</small>
+            </td>
             <td><input type="text" id="remark_${index}" value="${device.remark}" placeholder="备注" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 120px;"></td>
             <td>
                 <select id="isVulnerable_${index}" onchange="toggleDeviceInfo(${index}, this.value)" style="width: 80px;">
@@ -640,16 +673,24 @@ function confirmUnknownDevices() {
         const description = document.getElementById(`materialId_${i}`).value.trim() || device.description || device.erpCode;
         const spareCount = parseInt(document.getElementById(`spareCount_${i}`).value) || 0;
         const unit = document.getElementById(`unit_${i}`).value.trim() || device.unit;
-        const model = document.getElementById(`model_${i}`).value.trim() || device.model;
         const remark = document.getElementById(`remark_${i}`).value.trim();
         const isVulnerable = document.getElementById(`isVulnerable_${i}`).value === 'true';
         
         // 使用ERP编号作为materialId
         const materialId = erpCode;
         
+        // 获取多选的机型
+        const modelSelect = document.getElementById(`model_${i}`);
+        const selectedModels = Array.from(modelSelect.selectedOptions).map(option => option.value);
+        
+        // 如果没有选择机型，使用默认机型
+        if (selectedModels.length === 0) {
+            selectedModels.push(device.model || '');
+        }
+        
         // 验证逻辑
         if (isVulnerable) {
-            // 选择是的情况：物料描述、备件数、单位、机型都不能为空，备件数不能为0
+            // 选择是的情况：物料描述、备件数、单位都不能为空，备件数不能为0
             if (!description) {
                 alert(`第${i+1}行：物料描述不能为空`);
                 return;
@@ -662,60 +703,58 @@ function confirmUnknownDevices() {
                 alert(`第${i+1}行：单位不能为空`);
                 return;
             }
-            if (!model) {
+            if (selectedModels.some(model => !model)) {
                 alert(`第${i+1}行：机型不能为空`);
                 return;
             }
         }
         
-        device.materialId = materialId;
-        device.description = description;
-        device.spareCount = spareCount;
-        device.unit = unit;
-        device.model = model;
-        device.remark = remark;
-        device.isVulnerable = isVulnerable;
+        // 保存设备原始机型（文件机型）
+        const originalFileModel = device.model;
         
-        // 使用materialId+model作为复合键
-        const compositeKey = `${materialId}|${model}`;
-        
-        // 根据是否易损创建设备对象
-        const deviceObj = {
-            materialId,
-            description,
-            status: isVulnerable ? '白名单' : '黑名单'
-        };
-        
-        // 如果是易损，需要完整字段
-        if (isVulnerable) {
-            deviceObj.spareCount = spareCount;
-            deviceObj.unit = unit;
-            deviceObj.model = model;
-            deviceObj.remark = remark;
-        } else {
-            // 选择否的情况：只需要编号和描述
-            deviceObj.spareCount = 0;
-            deviceObj.unit = '';
-            deviceObj.model = model; // 保留机型，用于复合键
-            deviceObj.remark = '';
-        }
-        
-        // 添加到设备清单
-        devices.set(compositeKey, deviceObj);
-        
-        // 如果是易损，添加到结果
-        if (isVulnerable) {
-            vulnerableList.push({
-                erpCode: device.erpCode,
+        // 为每个选中的机型创建一条记录
+        selectedModels.forEach(selectedModel => {
+            // 使用materialId+selectedModel作为复合键
+            const compositeKey = `${materialId}|${selectedModel}`;
+            
+            // 根据是否易损创建设备对象
+            const deviceObj = {
                 materialId,
                 description,
-                spareCount,
-                unit,
-                model,
-                remark,
-                status: '白名单'
-            });
-        }
+                status: isVulnerable ? '白名单' : '黑名单'
+            };
+            
+            // 如果是易损，需要完整字段
+            if (isVulnerable) {
+                deviceObj.spareCount = spareCount;
+                deviceObj.unit = unit;
+                deviceObj.model = selectedModel;
+                deviceObj.remark = remark;
+            } else {
+                // 选择否的情况：只需要编号和描述
+                deviceObj.spareCount = 0;
+                deviceObj.unit = '';
+                deviceObj.model = selectedModel; // 保留机型，用于复合键
+                deviceObj.remark = '';
+            }
+            
+            // 添加到设备清单
+            devices.set(compositeKey, deviceObj);
+            
+            // 如果是易损，并且机型与文件机型匹配，添加到结果
+            if (isVulnerable && selectedModel === originalFileModel) {
+                vulnerableList.push({
+                    erpCode: device.erpCode,
+                    materialId,
+                    description,
+                    spareCount,
+                    unit,
+                    model: selectedModel,
+                    remark,
+                    status: '白名单'
+                });
+            }
+        });
     }
     
     // 保存更新后的设备清单
