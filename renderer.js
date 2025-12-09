@@ -952,6 +952,252 @@ async function exportList() {
     }
 }
 
+// 导出黑名单
+async function exportBlacklist() {
+    try {
+        // 从设备清单中过滤出黑名单设备
+        const blacklistDevices = [];
+        for (const [key, device] of devices.entries()) {
+            if (device.status === '黑名单') {
+                blacklistDevices.push(device);
+            }
+        }
+        
+        if (blacklistDevices.length === 0) {
+            alert('没有黑名单设备可以导出');
+            return;
+        }
+        
+        // 准备导出数据，从第一行开始就是数据，没有表头
+        // 第一列：物料编号，第二列：物料描述
+        const dataRows = blacklistDevices.map(device => [
+            device.materialId, // 物料编号
+            device.description // 物料描述
+        ]);
+        
+        // 直接使用数据行，没有标题和表头
+        const exportData = [...dataRows];
+        
+        // 创建Excel工作簿
+        const worksheet = XLSX.utils.aoa_to_sheet(exportData);
+        
+        // 设置列宽
+        worksheet['!cols'] = [
+            { wch: 15 }, // 物料编号
+            { wch: 45 } // 物料描述
+        ];
+        
+        // 设置数据行样式
+        for (let r = 0; r < dataRows.length; r++) {
+            for (let c = 0; c < 2; c++) {
+                const cellAddr = XLSX.utils.encode_cell({ r, c });
+                const cell = worksheet[cellAddr];
+                if (cell) {
+                    cell.s = {
+                        font: {
+                            name: '等线',
+                            sz: 11
+                        },
+                        alignment: {
+                            horizontal: c === 0 ? 'right' : 'left', // 物料编号靠右，物料描述靠左
+                            vertical: 'center'
+                        },
+                        border: {
+                            top: { style: 'thin' },
+                            bottom: { style: 'thin' },
+                            left: { style: 'thin' },
+                            right: { style: 'thin' }
+                        }
+                    };
+                }
+            }
+        }
+        
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, '黑名单');
+        
+        // 生成Excel文件
+        const excelBuffer = XLSX.write(workbook, { 
+            bookType: 'xlsx', 
+            type: 'buffer'
+        });
+        
+        // 保存文件
+        const filePath = await ipcRenderer.invoke('save-file', excelBuffer, '黑名单.xlsx');
+        if (filePath) {
+            alert('黑名单导出成功！');
+        }
+    } catch (error) {
+        console.error('导出黑名单失败:', error);
+        alert('导出黑名单失败: ' + error.message);
+    }
+}
+
+// 导出易损件库，按机型分类生成Excel文件
+async function exportVulnerableLibrary() {
+    try {
+        // 让用户选择导出目录
+        const exportDir = await ipcRenderer.invoke('select-directory');
+        if (!exportDir) {
+            return;
+        }
+        
+        // 从设备清单中过滤出白名单设备
+        const whitelistDevices = [];
+        for (const [key, device] of devices.entries()) {
+            if (device.status === '白名单') {
+                whitelistDevices.push(device);
+            }
+        }
+        
+        if (whitelistDevices.length === 0) {
+            alert('没有白名单设备可以导出');
+            return;
+        }
+        
+        // 定义需要导出的机型列表
+        const models = ['系统', '摆渡车', '运输车', '砖机', '辅机'];
+        
+        // 按机型分类设备
+        const devicesByModel = new Map();
+        models.forEach(model => {
+            devicesByModel.set(model, []);
+        });
+        
+        whitelistDevices.forEach(device => {
+            if (models.includes(device.model)) {
+                devicesByModel.get(device.model).push(device);
+            }
+        });
+        
+        // 为每个机型创建一个Excel文件
+        let successCount = 0;
+        
+        for (const [model, modelDevices] of devicesByModel.entries()) {
+            if (modelDevices.length === 0) {
+                continue;
+            }
+            
+            // 准备导出数据，第一行是表头
+            const headers = ['物料号', '物料描述', '机型', '建议备件数量', '单位', '备注'];
+            
+            // 数据行
+            const dataRows = modelDevices.map(device => [
+                device.materialId, // 物料号
+                device.description, // 物料描述
+                device.model, // 机型
+                device.spareCount, // 建议备件数量
+                device.unit, // 单位
+                device.remark // 备注
+            ]);
+            
+            // 创建包含表头和数据的完整数据
+            const exportData = [
+                headers, // 表头行
+                ...dataRows // 数据行
+            ];
+            
+            // 创建Excel工作簿
+            const worksheet = XLSX.utils.aoa_to_sheet(exportData);
+            
+            // 设置列宽
+            worksheet['!cols'] = [
+                { wch: 15 }, // 物料号
+                { wch: 45 }, // 物料描述
+                { wch: 10 }, // 机型
+                { wch: 15 }, // 建议备件数量
+                { wch: 8 }, // 单位
+                { wch: 15 } // 备注
+            ];
+            
+            // 设置表头样式
+            for (let c = 0; c < headers.length; c++) {
+                const cellAddr = XLSX.utils.encode_cell({ r: 0, c });
+                const cell = worksheet[cellAddr];
+                if (cell) {
+                    cell.s = {
+                        font: {
+                            name: '等线',
+                            sz: 11,
+                            bold: true
+                        },
+                        alignment: {
+                            horizontal: 'center',
+                            vertical: 'center'
+                        },
+                        fill: {
+                            type: 'pattern',
+                            patternType: 'solid',
+                            fgColor: { rgb: 'E0E0E0' } // 灰色背景
+                        },
+                        border: {
+                            top: { style: 'thin' },
+                            bottom: { style: 'thin' },
+                            left: { style: 'thin' },
+                            right: { style: 'thin' }
+                        }
+                    };
+                }
+            }
+            
+            // 设置数据行样式
+            for (let r = 1; r < exportData.length; r++) {
+                for (let c = 0; c < headers.length; c++) {
+                    const cellAddr = XLSX.utils.encode_cell({ r, c });
+                    const cell = worksheet[cellAddr];
+                    if (cell) {
+                        // 确定对齐方式
+                        let horizontalAlign = 'left';
+                        if (c === 0 || c === 3) { // 物料号、建议备件数量靠右对齐
+                            horizontalAlign = 'right';
+                        } else if (c === 2) { // 机型居中对齐
+                            horizontalAlign = 'center';
+                        }
+                        
+                        cell.s = {
+                            font: {
+                                name: '等线',
+                                sz: 11
+                            },
+                            alignment: {
+                                horizontal: horizontalAlign,
+                                vertical: 'center'
+                            },
+                            border: {
+                                top: { style: 'thin' },
+                                bottom: { style: 'thin' },
+                                left: { style: 'thin' },
+                                right: { style: 'thin' }
+                            }
+                        };
+                    }
+                }
+            }
+            
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, model);
+            
+            // 生成Excel文件
+            const excelBuffer = XLSX.write(workbook, { 
+                bookType: 'xlsx', 
+                type: 'buffer'
+            });
+            
+            // 保存文件，文件名格式：机型_易损件清单.xlsx
+            const fileName = `${model}_易损件清单.xlsx`;
+            const filePath = path.join(exportDir, fileName);
+            
+            await fs.writeFile(filePath, excelBuffer);
+            successCount++;
+        }
+        
+        alert(`易损件库导出成功！共导出 ${successCount} 个机型的Excel文件。`);
+    } catch (error) {
+        console.error('导出易损件库失败:', error);
+        alert('导出易损件库失败: ' + error.message);
+    }
+}
+
 // 批量导入黑名单
 async function importBlacklist() {
     try {
@@ -1170,6 +1416,12 @@ document.getElementById('importBlacklist').addEventListener('click', importBlack
 
 // 添加批量导入白名单按钮事件监听
 document.getElementById('importWhitelist').addEventListener('click', importWhitelist);
+
+// 添加导出黑名单按钮事件监听
+document.getElementById('exportBlacklist').addEventListener('click', exportBlacklist);
+
+// 添加导出易损件库按钮事件监听
+document.getElementById('exportVulnerableLibrary').addEventListener('click', exportVulnerableLibrary);
 
 // 添加设备类型过滤事件监听
 deviceTypeFilter.addEventListener('change', renderDeviceTable);
