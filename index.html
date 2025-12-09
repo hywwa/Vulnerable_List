@@ -41,11 +41,13 @@
             flex: 1;
             text-align: center;
             border-bottom: 3px solid transparent;
+            color: #333;
+            font-weight: normal;
             transition: all 0.3s ease;
         }
         .tab.active {
             border-bottom-color: #3498db;
-            color: #3498db;
+            color: #333;
             font-weight: bold;
         }
         .tab-content {
@@ -182,7 +184,13 @@
             </div>
             <div class="input-group">
                  <label>机型:</label>
-                <input type="text" id="model">
+                <select id="model">
+                    <option value="系统">系统</option>
+                    <option value="摆渡车">摆渡车</option>
+                    <option value="运输车">运输车</option>
+                    <option value="砖机">砖机</option>
+                    <option value="辅机">辅机</option>
+                </select>
                 <label>备件数:</label>
                 <input type="number" id="spareCount" min="0">
                 <label>单位:</label>
@@ -204,6 +212,8 @@
                 <button id="loadDevices" class="secondary">刷新设备</button>
                 <button id="importBlacklist" class="secondary">批量导入黑名单</button>
                 <button id="importWhitelist" class="secondary">批量导入白名单</button>
+                <button id="exportBlacklist" class="secondary">导出黑名单</button>
+                <button id="exportVulnerableLibrary" class="secondary">导出易损件库</button>
             </div>
             <div class="input-group" style="margin: 15px 0;">
                 <label>设备类型:</label>
@@ -311,6 +321,6 @@
         </div>
     </div>
 
-    <script src="renderer.js"></script>
+    <script type="module" src="./src/renderer.js"></script>
 </body>
 </html>

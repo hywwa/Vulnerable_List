@@ -1,19 +1,15 @@
-const { ipcRenderer } = require('electron');
-const XLSX = require('xlsx-js-style');
-const fs = require('fs-extra');
-const path = require('path');
-const db = require('./database');
+import * as XLSX from 'xlsx-js-style';
 
 // 全局变量
 let devices = new Map(); // 设备清单，key: 物料编号
-let selectedFolder = null;
+let selectedFiles = []; // 选择的文件
 let unknownDevices = []; // 未识别的设备
 let vulnerableList = []; // 易损清单结果
 let matchedDevices = []; // 白名单已匹配设备
 let allFiles = []; // 处理的所有文件
 
-// 初始化数据库连接
-db.initDatabase();
+// API 基础 URL
+const API_BASE_URL = '/api';
 
 // DOM元素
 const tabs = document.querySelectorAll('.tab');
@@ -43,6 +39,11 @@ const unknownTableBody = document.getElementById('unknownTableBody');
 const resultSection = document.getElementById('resultSection');
 const resultTableBody = document.getElementById('resultTableBody');
 
+// 初始化：从服务器加载设备清单
+function initApp() {
+    loadDevices();
+}
+
 // 标签页切换
 function switchTab(tabName) {
     tabs.forEach(tab => tab.classList.remove('active'));
@@ -52,11 +53,7 @@ function switchTab(tabName) {
     document.getElementById(tabName).classList.add('active');
 }
 
-tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-        switchTab(tab.dataset.tab);
-    });
-});
+
 
 // 设备清单维护
 function addDevice() {
@@ -109,9 +106,9 @@ function renderDeviceTable() {
     
     // 过滤设备
     const filteredDevices = [];
-    for (const [materialId, device] of devices) {
+    for (const [materialId, device] of devices.entries()) {
         const matchesType = filterType === 'all' || device.status === filterType;
-        const matchesSearch = !searchTerm || materialId.toLowerCase().includes(searchTerm);
+        const matchesSearch = !searchTerm || device.materialId.toLowerCase().includes(searchTerm);
         
         if (matchesType && matchesSearch) {
             filteredDevices.push(device);
@@ -174,10 +171,10 @@ function renderDeviceTable() {
                     </span>
                 </td>
                 <td>
-                    <button onclick="removeDevice('${device.materialId}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
+                    <button onclick="removeDevice('${device.materialId}|${device.model}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
                         删除
                     </button>
-                    <button onclick="toggleDeviceStatus('${device.materialId}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
+                    <button onclick="toggleDeviceStatus('${device.materialId}|${device.model}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
                         改为黑名单
                     </button>
                 </td>
@@ -199,10 +196,10 @@ function renderDeviceTable() {
                     </span>
                 </td>
                 <td>
-                    <button onclick="removeDevice('${device.materialId}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
+                    <button onclick="removeDevice('${device.materialId}|${device.model}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
                         删除
                     </button>
-                    <button onclick="toggleDeviceStatus('${device.materialId}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
+                    <button onclick="toggleDeviceStatus('${device.materialId}|${device.model}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
                         改为白名单
                     </button>
                 </td>
@@ -230,10 +227,9 @@ function renderDeviceTable() {
     }
 }
 
-async function removeDevice(materialId) {
+async function removeDevice(compositeKey) {
     try {
-        await db.deleteDevice(materialId);
-        devices.delete(materialId);
+        devices.delete(compositeKey);
         renderDeviceTable();
     } catch (error) {
         console.error('删除设备失败:', error);
@@ -242,9 +238,9 @@ async function removeDevice(materialId) {
 }
 
 // 切换设备状态（白名单 ↔ 黑名单）
-async function toggleDeviceStatus(materialId) {
+async function toggleDeviceStatus(compositeKey) {
     try {
-        const device = devices.get(materialId);
+        const device = devices.get(compositeKey);
         if (!device) {
             alert('未找到该设备');
             return;
@@ -260,10 +256,7 @@ async function toggleDeviceStatus(materialId) {
         };
         
         // 更新内存中的设备清单
-        devices.set(materialId, updatedDevice);
-        
-        // 更新数据库
-        await db.saveDevices(devices);
+        devices.set(compositeKey, updatedDevice);
         
         // 重新渲染设备表格
         renderDeviceTable();
@@ -277,11 +270,20 @@ async function toggleDeviceStatus(materialId) {
 
 async function saveDevices() {
     try {
-        const success = await db.saveDevices(devices);
-        if (success) {
+        const devicesArray = Array.from(devices.values());
+        const response = await fetch(`${API_BASE_URL}/devices`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(devicesArray)
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
             alert('设备清单保存成功');
         } else {
-            alert('设备清单保存失败');
+            alert('设备清单保存失败: ' + (result.error || '未知错误'));
         }
     } catch (error) {
         console.error('保存设备清单失败:', error);
@@ -291,7 +293,21 @@ async function saveDevices() {
 
 async function loadDevices() {
     try {
-        devices = await db.getAllDevices();
+        const response = await fetch(`${API_BASE_URL}/devices`);
+        if (!response.ok) {
+            throw new Error('网络请求失败');
+        }
+        
+        const devicesArray = await response.json();
+        
+        // 将设备数组转换为 Map 对象
+        const devicesMap = new Map();
+        devicesArray.forEach(device => {
+            const compositeKey = `${device.materialId}|${device.model}`;
+            devicesMap.set(compositeKey, device);
+        });
+        
+        devices = devicesMap;
         renderDeviceTable();
         alert('设备清单加载成功');
     } catch (error) {
@@ -300,38 +316,47 @@ async function loadDevices() {
     }
 }
 
-// 选择项目文件夹
-async function selectFolder() {
-    try {
-        selectedFolder = await ipcRenderer.invoke('select-directory');
-        if (selectedFolder) {
-            // 获取所有Excel文件
-            allFiles = await fs.readdir(selectedFolder);
-            allFiles = allFiles.filter(file => 
-                ['.xlsx', '.xls'].includes(path.extname(file).toLowerCase())
-            );
-            
-            fileInfoDiv.innerHTML = `<strong>已选择文件夹:</strong> ${selectedFolder}<br>
-                                     <strong>找到Excel文件:</strong> ${allFiles.length} 个<br>
-                                     ${allFiles.map(file => `• ${file}`).join('<br>')}`;
+// 选择文件
+function selectFiles() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = '.xlsx,.xls';
+    input.onchange = (e) => {
+        selectedFiles = Array.from(e.target.files);
+        if (selectedFiles.length > 0) {
+            fileInfoDiv.innerHTML = `<strong>已选择文件:</strong> ${selectedFiles.length} 个<br>
+                                     ${selectedFiles.map(file => `• ${file.name}`).join('<br>')}`;
             fileInfoDiv.style.display = 'block';
         }
-    } catch (error) {
-        console.error('选择文件夹失败:', error);
-        alert('选择文件夹失败: ' + error.message);
-    }
+    };
+    input.click();
 }
 
 // 处理Excel文件
 async function processFiles() {
-    if (!selectedFolder || allFiles.length === 0) {
-        alert('请先选择包含Excel文件的项目文件夹');
+    if (selectedFiles.length === 0) {
+        alert('请先选择Excel文件');
         return;
     }
     
     // 确保设备清单已加载
     if (devices.size === 0) {
-        devices = await db.getAllDevices();
+        const response = await fetch(`${API_BASE_URL}/devices`);
+        if (!response.ok) {
+            throw new Error('网络请求失败');
+        }
+        
+        const devicesArray = await response.json();
+        
+        // 将设备数组转换为 Map 对象
+        const devicesMap = new Map();
+        devicesArray.forEach(device => {
+            const compositeKey = `${device.materialId}|${device.model}`;
+            devicesMap.set(compositeKey, device);
+        });
+        
+        devices = devicesMap;
         if (devices.size === 0) {
             alert('请先维护设备清单');
             return;
@@ -343,7 +368,7 @@ async function processFiles() {
     vulnerableList = [];
     matchedDevices = [];
     
-    let totalFiles = allFiles.length;
+    let totalFiles = selectedFiles.length;
     let processedFiles = 0;
     let totalDevices = 0;
     let matchedWhite = 0;
@@ -366,13 +391,13 @@ async function processFiles() {
     
     // 并发处理函数
     async function processFilesConcurrently() {
-        for (let i = 0; i < allFiles.length; i += CONCURRENCY_LIMIT) {
-            const batch = allFiles.slice(i, i + CONCURRENCY_LIMIT);
+        for (let i = 0; i < selectedFiles.length; i += CONCURRENCY_LIMIT) {
+            const batch = selectedFiles.slice(i, i + CONCURRENCY_LIMIT);
             const batchPromises = batch.map(async (file) => {
-                const filePath = path.join(selectedFolder, file);
                 try {
                     // 读取Excel文件
-                    const workbook = XLSX.readFile(filePath, { cellDates: true, cellText: false });
+                    const arrayBuffer = await file.arrayBuffer();
+                    const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellText: false });
                     const sheetName = workbook.SheetNames[0];
                     const worksheet = workbook.Sheets[sheetName];
                     
@@ -399,7 +424,7 @@ async function processFiles() {
                     }
                     
                     if (erpColumnIndex === -1) {
-                        console.log(`文件 ${file} 中未找到ERP列`);
+                        console.log(`文件 ${file.name} 中未找到ERP列`);
                         return;
                     }
                     
@@ -439,7 +464,7 @@ async function processFiles() {
                     
                     // 根据文件名判断机型
                     let model = '';
-                    const fileName = file.toLowerCase();
+                    const fileName = file.name.toLowerCase();
                     if (fileName.includes('ap')) {
                         model = '系统';
                     } else if (fileName.includes('摆渡车')) {
@@ -515,7 +540,7 @@ async function processFiles() {
                     
                     return fileResults;
                 } catch (error) {
-                    console.error(`处理文件 ${file} 失败:`, error);
+                    console.error(`处理文件 ${file.name} 失败:`, error);
                     return null;
                 } finally {
                     processedFiles++;
@@ -848,12 +873,6 @@ async function exportList() {
             { wch: 5 } // 备注
         ];
         
-        // 添加单元格样式
-        // 标题样式：加粗、等线、14号、居中
-        // 表头样式：居中、加粗、等线、11号
-        // 数据样式：等线、11号
-        // 对齐方式：序号、物料号、备件数靠右，其他靠左
-        
         // 设置标题行样式
         const titleCell = worksheet['A1'];
         if (titleCell) {
@@ -935,89 +954,302 @@ async function exportList() {
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, '易损件清单');
         
-        // 生成Excel文件
-        const excelBuffer = XLSX.write(workbook, { 
-            bookType: 'xlsx', 
-            type: 'buffer'
-        });
-        
-        // 保存文件
-        const filePath = await ipcRenderer.invoke('save-file', excelBuffer, '易损件清单.xlsx');
-        if (filePath) {
-            alert('易损清单导出成功！');
-        }
+        // 生成Excel文件并下载
+        XLSX.writeFile(workbook, '易损件清单.xlsx');
+        alert('易损清单导出成功！');
     } catch (error) {
         console.error('导出易损清单失败:', error);
         alert('导出易损清单失败: ' + error.message);
     }
 }
 
-// 批量导入黑名单
-async function importBlacklist() {
+// 导出黑名单
+async function exportBlacklist() {
     try {
-        // 选择文件 - 通过IPC调用主进程的文件选择功能
-        const filePath = await ipcRenderer.invoke('select-file', 
-            [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }], 
-            '选择黑名单Excel文件'
-        );
-        
-        if (!filePath) {
-            return;
-        }
-        console.log('选择的文件:', filePath);
-        
-        // 读取Excel文件
-        const workbook = XLSX.readFile(filePath);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        
-        // 解析Excel数据，从第一行开始，没有表头
-        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+        // 从设备清单中过滤出黑名单设备
         const blacklistDevices = [];
-        
-        // 遍历所有行，从第一行开始
-        for (let r = range.s.r; r <= range.e.r; r++) {
-            const materialIdCell = XLSX.utils.encode_cell({ r, c: 0 }); // 第一列：物料编号
-            const descriptionCell = XLSX.utils.encode_cell({ r, c: 1 }); // 第二列：物料描述
-            
-            const materialId = worksheet[materialIdCell]?.v?.toString().trim();
-            const description = worksheet[descriptionCell]?.v?.toString().trim();
-            
-            if (materialId) {
-                blacklistDevices.push({
-                    materialId: materialId,
-                    spareCount: 0, // 默认备件数为0
-                    unit: '', // 默认单位为空
-                    model: '', // 默认机型为空
-                    remark: '', // 默认备注为空
-                    description: description || '', // 物料描述
-                    status: '黑名单' // 固定为黑名单
-                });
+        for (const [key, device] of devices.entries()) {
+            if (device.status === '黑名单') {
+                blacklistDevices.push(device);
             }
         }
         
-        console.log('解析到的黑名单设备数量:', blacklistDevices.length);
-        
         if (blacklistDevices.length === 0) {
-            alert('未解析到任何有效设备数据');
+            alert('没有黑名单设备可以导出');
             return;
         }
         
-        // 批量保存到数据库
-        const devicesMap = new Map();
-        blacklistDevices.forEach(device => {
-            devicesMap.set(device.materialId, device);
-        });
+        // 准备导出数据，从第一行开始就是数据，没有表头
+        // 第一列：物料编号，第二列：物料描述
+        const dataRows = blacklistDevices.map(device => [
+            device.materialId, // 物料编号
+            device.description // 物料描述
+        ]);
         
-        const saveResult = await db.saveDevices(devicesMap);
-        if (saveResult) {
-            alert(`成功导入 ${blacklistDevices.length} 条黑名单设备`);
-            // 重新加载设备清单
-            await loadDevices();
-        } else {
-            alert('导入失败，请重试');
+        // 直接使用数据行，没有标题和表头
+        const exportData = [...dataRows];
+        
+        // 创建Excel工作簿
+        const worksheet = XLSX.utils.aoa_to_sheet(exportData);
+        
+        // 设置列宽
+        worksheet['!cols'] = [
+            { wch: 15 }, // 物料编号
+            { wch: 45 } // 物料描述
+        ];
+        
+        // 设置数据行样式
+        for (let r = 0; r < dataRows.length; r++) {
+            for (let c = 0; c < 2; c++) {
+                const cellAddr = XLSX.utils.encode_cell({ r, c });
+                const cell = worksheet[cellAddr];
+                if (cell) {
+                    cell.s = {
+                        font: {
+                            name: '等线',
+                            sz: 11
+                        },
+                        alignment: {
+                            horizontal: c === 0 ? 'right' : 'left', // 物料编号靠右，物料描述靠左
+                            vertical: 'center'
+                        },
+                        border: {
+                            top: { style: 'thin' },
+                            bottom: { style: 'thin' },
+                            left: { style: 'thin' },
+                            right: { style: 'thin' }
+                        }
+                    };
+                }
+            }
         }
         
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, '黑名单');
+        
+        // 生成Excel文件并下载
+        XLSX.writeFile(workbook, '黑名单.xlsx');
+        alert('黑名单导出成功！');
+    } catch (error) {
+        console.error('导出黑名单失败:', error);
+        alert('导出黑名单失败: ' + error.message);
+    }
+}
+
+// 导出易损件库，按机型分类生成Excel文件
+async function exportVulnerableLibrary() {
+    try {
+        // 从设备清单中过滤出白名单设备
+        const whitelistDevices = [];
+        for (const [key, device] of devices.entries()) {
+            if (device.status === '白名单') {
+                whitelistDevices.push(device);
+            }
+        }
+        
+        if (whitelistDevices.length === 0) {
+            alert('没有白名单设备可以导出');
+            return;
+        }
+        
+        // 定义需要导出的机型列表
+        const models = ['系统', '摆渡车', '运输车', '砖机', '辅机'];
+        
+        // 按机型分类设备
+        const devicesByModel = new Map();
+        models.forEach(model => {
+            devicesByModel.set(model, []);
+        });
+        
+        whitelistDevices.forEach(device => {
+            if (models.includes(device.model)) {
+                devicesByModel.get(device.model).push(device);
+            }
+        });
+        
+        // 为每个机型创建一个Excel文件
+        let successCount = 0;
+        
+        for (const [model, modelDevices] of devicesByModel.entries()) {
+            if (modelDevices.length === 0) {
+                continue;
+            }
+            
+            // 准备导出数据，第一行是表头
+            const headers = ['物料号', '物料描述', '机型', '建议备件数量', '单位', '备注'];
+            
+            // 数据行
+            const dataRows = modelDevices.map(device => [
+                device.materialId, // 物料号
+                device.description, // 物料描述
+                device.model, // 机型
+                device.spareCount, // 建议备件数量
+                device.unit, // 单位
+                device.remark // 备注
+            ]);
+            
+            // 创建包含表头和数据的完整数据
+            const exportData = [
+                headers, // 表头行
+                ...dataRows // 数据行
+            ];
+            
+            // 创建Excel工作簿
+            const worksheet = XLSX.utils.aoa_to_sheet(exportData);
+            
+            // 设置列宽
+            worksheet['!cols'] = [
+                { wch: 15 }, // 物料号
+                { wch: 45 }, // 物料描述
+                { wch: 10 }, // 机型
+                { wch: 15 }, // 建议备件数量
+                { wch: 8 }, // 单位
+                { wch: 15 } // 备注
+            ];
+            
+            // 设置表头样式
+            for (let c = 0; c < headers.length; c++) {
+                const cellAddr = XLSX.utils.encode_cell({ r: 0, c });
+                const cell = worksheet[cellAddr];
+                if (cell) {
+                    cell.s = {
+                        font: {
+                            name: '等线',
+                            sz: 11,
+                            bold: true
+                        },
+                        alignment: {
+                            horizontal: 'center',
+                            vertical: 'center'
+                        },
+                        fill: {
+                            type: 'pattern',
+                            patternType: 'solid',
+                            fgColor: { rgb: 'E0E0E0' } // 灰色背景
+                        },
+                        border: {
+                            top: { style: 'thin' },
+                            bottom: { style: 'thin' },
+                            left: { style: 'thin' },
+                            right: { style: 'thin' }
+                        }
+                    };
+                }
+            }
+            
+            // 设置数据行样式
+            for (let r = 1; r < exportData.length; r++) {
+                for (let c = 0; c < headers.length; c++) {
+                    const cellAddr = XLSX.utils.encode_cell({ r, c });
+                    const cell = worksheet[cellAddr];
+                    if (cell) {
+                        // 确定对齐方式
+                        let horizontalAlign = 'left';
+                        if (c === 0 || c === 3) { // 物料号、建议备件数量靠右对齐
+                            horizontalAlign = 'right';
+                        } else if (c === 2) { // 机型居中对齐
+                            horizontalAlign = 'center';
+                        }
+                        
+                        cell.s = {
+                            font: {
+                                name: '等线',
+                                sz: 11
+                            },
+                            alignment: {
+                                horizontal: horizontalAlign,
+                                vertical: 'center'
+                            },
+                            border: {
+                                top: { style: 'thin' },
+                                bottom: { style: 'thin' },
+                                left: { style: 'thin' },
+                                right: { style: 'thin' }
+                            }
+                        };
+                    }
+                }
+            }
+            
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, model);
+            
+            // 生成Excel文件并下载
+            XLSX.writeFile(workbook, `${model}_易损件清单.xlsx`);
+            successCount++;
+        }
+        
+        alert(`易损件库导出成功！共导出 ${successCount} 个机型的Excel文件。`);
+    } catch (error) {
+        console.error('导出易损件库失败:', error);
+        alert('导出易损件库失败: ' + error.message);
+    }
+}
+
+// 批量导入黑名单
+async function importBlacklist() {
+    try {
+        // 选择文件
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.xlsx,.xls';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                return;
+            }
+            
+            // 读取Excel文件
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer);
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            
+            // 解析Excel数据，从第一行开始，没有表头
+            const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+            const blacklistDevices = [];
+            
+            // 遍历所有行，从第一行开始
+            for (let r = range.s.r; r <= range.e.r; r++) {
+                const materialIdCell = XLSX.utils.encode_cell({ r, c: 0 }); // 第一列：物料编号
+                const descriptionCell = XLSX.utils.encode_cell({ r, c: 1 }); // 第二列：物料描述
+                
+                const materialId = worksheet[materialIdCell]?.v?.toString().trim();
+                const description = worksheet[descriptionCell]?.v?.toString().trim();
+                
+                if (materialId) {
+                    blacklistDevices.push({
+                        materialId: materialId,
+                        spareCount: 0, // 默认备件数为0
+                        unit: '', // 默认单位为空
+                        model: '', // 默认机型为空
+                        remark: '', // 默认备注为空
+                        description: description || '', // 物料描述
+                        status: '黑名单' // 固定为黑名单
+                    });
+                }
+            }
+            
+            if (blacklistDevices.length === 0) {
+                alert('未解析到任何有效设备数据');
+                return;
+            }
+            
+            // 批量保存设备
+            blacklistDevices.forEach(device => {
+                const compositeKey = `${device.materialId}|${device.model}`;
+                devices.set(compositeKey, device);
+            });
+            
+            // 保存到本地存储
+            saveDevicesToStorage();
+            
+            // 重新渲染设备表格
+            renderDeviceTable();
+            
+            alert(`成功导入 ${blacklistDevices.length} 条黑名单设备`);
+        };
+        input.click();
     } catch (error) {
         console.error('批量导入黑名单失败:', error);
         alert('导入失败: ' + error.message);
@@ -1027,188 +1259,162 @@ async function importBlacklist() {
 // 批量导入白名单
 async function importWhitelist() {
     try {
-        // 选择文件 - 通过IPC调用主进程的文件选择功能
-        const filePath = await ipcRenderer.invoke('select-file', 
-            [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }], 
-            '选择白名单Excel文件'
-        );
-        
-        if (!filePath) {
-            return;
-        }
-        console.log('选择的文件:', filePath);
-        
-        // 读取Excel文件
-        const workbook = XLSX.readFile(filePath);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        
-        // 解析Excel数据，自动根据表头识别列
-        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
-        const whitelistDevices = [];
-        
-        // 先解析表头行，获取列映射
-        const headerRow = range.s.r; // 表头行号
-        const headerMap = new Map(); // 表头映射，key: 表头内容, value: 列索引
-        
-        // 遍历表头行的所有列，建立映射关系
-        for (let c = range.s.c; c <= range.e.c; c++) {
-            const headerCell = XLSX.utils.encode_cell({ r: headerRow, c });
-            const headerValue = worksheet[headerCell]?.v?.toString().trim();
-            if (headerValue) {
-                headerMap.set(headerValue, c);
+        // 选择文件
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.xlsx,.xls';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                return;
             }
-        }
-        
-        // 定义期望的表头映射关系
-        const expectedHeaders = {
-            '物料号': 'materialId',
-            '物料描述': 'description',
-            '状态': 'status',
-            '机型': 'model',
-            '备件数': 'spareCount',
-            '单位': 'unit',
-            '备注': 'remark',
-            // 支持别名
-            '物料编号': 'materialId',
-            '建议备件数量': 'spareCount'
-        };
-        
-        // 构建列索引映射
-        const columnMap = {};
-        headerMap.forEach((colIndex, headerName) => {
-            for (const [expectedHeader, fieldName] of Object.entries(expectedHeaders)) {
-                // 模糊匹配，忽略大小写
-                if (headerName.includes(expectedHeader)) {
-                    columnMap[fieldName] = colIndex;
-                    break;
+            
+            // 读取Excel文件
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer);
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            
+            // 解析Excel数据，自动根据表头识别列
+            const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+            const whitelistDevices = [];
+            
+            // 先解析表头行，获取列映射
+            const headerRow = range.s.r; // 表头行号
+            const headerMap = new Map(); // 表头映射，key: 表头内容, value: 列索引
+            
+            // 遍历表头行的所有列，建立映射关系
+            for (let c = range.s.c; c <= range.e.c; c++) {
+                const headerCell = XLSX.utils.encode_cell({ r: headerRow, c });
+                const headerValue = worksheet[headerCell]?.v?.toString().trim();
+                if (headerValue) {
+                    headerMap.set(headerValue, c);
                 }
             }
-        });
-        
-        // 遍历所有数据行，从表头行下一行开始
-        for (let r = headerRow + 1; r <= range.e.r; r++) {
-            // 获取各字段值
-            const materialIdCell = XLSX.utils.encode_cell({ r, c: columnMap.materialId });
-            const descriptionCell = XLSX.utils.encode_cell({ r, c: columnMap.description });
-            const statusCell = columnMap.status ? XLSX.utils.encode_cell({ r, c: columnMap.status }) : null;
-            const modelCell = XLSX.utils.encode_cell({ r, c: columnMap.model });
-            const spareCountCell = XLSX.utils.encode_cell({ r, c: columnMap.spareCount });
-            const unitCell = XLSX.utils.encode_cell({ r, c: columnMap.unit });
-            const remarkCell = XLSX.utils.encode_cell({ r, c: columnMap.remark });
             
-            const materialId = worksheet[materialIdCell]?.v?.toString().trim();
-            const description = worksheet[descriptionCell]?.v?.toString().trim();
-            const statusValue = statusCell ? worksheet[statusCell]?.v?.toString().trim() : null;
-            const model = worksheet[modelCell]?.v?.toString().trim();
-            const spareCount = worksheet[spareCountCell]?.v ? parseInt(worksheet[spareCountCell].v) || 0 : 0;
-            const unit = worksheet[unitCell]?.v?.toString().trim();
-            const remark = worksheet[remarkCell]?.v?.toString().trim();
+            // 定义期望的表头映射关系
+            const expectedHeaders = {
+                '物料号': 'materialId',
+                '物料描述': 'description',
+                '状态': 'status',
+                '机型': 'model',
+                '备件数': 'spareCount',
+                '单位': 'unit',
+                '备注': 'remark',
+                // 支持别名
+                '物料编号': 'materialId',
+                '建议备件数量': 'spareCount'
+            };
             
-            if (materialId) {
-                // 如果Excel中包含状态列，使用Excel中的状态，否则默认为白名单
-                let finalStatus = '白名单';
-                if (statusValue) {
-                    // 处理状态值，转换为标准状态
-                    if (statusValue.includes('黑') || statusValue === '黑名单') {
-                        finalStatus = '黑名单';
-                    } else if (statusValue.includes('白') || statusValue === '白名单') {
-                        finalStatus = '白名单';
+            // 构建列索引映射
+            const columnMap = {};
+            headerMap.forEach((colIndex, headerName) => {
+                for (const [expectedHeader, fieldName] of Object.entries(expectedHeaders)) {
+                    // 模糊匹配，忽略大小写
+                    if (headerName.includes(expectedHeader)) {
+                        columnMap[fieldName] = colIndex;
+                        break;
                     }
                 }
+            });
+            
+            // 遍历所有数据行，从表头行下一行开始
+            for (let r = headerRow + 1; r <= range.e.r; r++) {
+                // 获取各字段值
+                const materialIdCell = XLSX.utils.encode_cell({ r, c: columnMap.materialId });
+                const descriptionCell = XLSX.utils.encode_cell({ r, c: columnMap.description });
+                const spareCountCell = XLSX.utils.encode_cell({ r, c: columnMap.spareCount });
+                const unitCell = XLSX.utils.encode_cell({ r, c: columnMap.unit });
+                const modelCell = XLSX.utils.encode_cell({ r, c: columnMap.model });
+                const remarkCell = XLSX.utils.encode_cell({ r, c: columnMap.remark });
+                const statusCell = XLSX.utils.encode_cell({ r, c: columnMap.status });
+                
+                const materialId = worksheet[materialIdCell]?.v?.toString().trim();
+                if (!materialId) {
+                    continue;
+                }
+                
+                const description = worksheet[descriptionCell]?.v?.toString().trim();
+                const spareCount = parseInt(worksheet[spareCountCell]?.v) || 0;
+                const unit = worksheet[unitCell]?.v?.toString().trim();
+                const model = worksheet[modelCell]?.v?.toString().trim();
+                const remark = worksheet[remarkCell]?.v?.toString().trim();
+                const status = worksheet[statusCell]?.v?.toString().trim() || '白名单';
                 
                 whitelistDevices.push({
                     materialId: materialId,
-                    description: description || '', // 物料描述
-                    status: finalStatus, // 使用Excel中的状态或默认白名单
-                    model: model || '', // 机型
-                    spareCount: spareCount, // 备件数
-                    unit: unit || '', // 单位
-                    remark: remark || '', // 备注
+                    description: description || '',
+                    spareCount: spareCount,
+                    unit: unit || '',
+                    model: model || '',
+                    remark: remark || '',
+                    status: status
                 });
             }
-        }
-        
-        console.log('解析到的白名单设备数量:', whitelistDevices.length);
-        
-        if (whitelistDevices.length === 0) {
-            alert('未解析到任何有效设备数据');
-            return;
-        }
-        
-        // 批量保存到数据库
-        const devicesMap = new Map();
-        whitelistDevices.forEach(device => {
-            devicesMap.set(device.materialId, device);
-        });
-        
-        const saveResult = await db.saveDevices(devicesMap);
-        if (saveResult) {
+            
+            if (whitelistDevices.length === 0) {
+                alert('未解析到任何有效设备数据');
+                return;
+            }
+            
+            // 批量保存设备
+            whitelistDevices.forEach(device => {
+                const compositeKey = `${device.materialId}|${device.model}`;
+                devices.set(compositeKey, device);
+            });
+            
+            // 保存到本地存储
+            saveDevicesToStorage();
+            
+            // 重新渲染设备表格
+            renderDeviceTable();
+            
             alert(`成功导入 ${whitelistDevices.length} 条白名单设备`);
-            // 重新加载设备清单
-            await loadDevices();
-        } else {
-            alert('导入失败，请重试');
-        }
-        
+        };
+        input.click();
     } catch (error) {
         console.error('批量导入白名单失败:', error);
         alert('导入失败: ' + error.message);
     }
 }
 
-// 事件监听
-addDeviceBtn.addEventListener('click', addDevice);
-saveDevicesBtn.addEventListener('click', saveDevices);
-loadDevicesBtn.addEventListener('click', loadDevices);
-selectFolderBtn.addEventListener('click', selectFolder);
-processFilesBtn.addEventListener('click', processFiles);
-exportListBtn.addEventListener('click', exportList);
-
-// 添加批量导入黑名单按钮事件监听
-document.getElementById('importBlacklist').addEventListener('click', importBlacklist);
-
-// 添加批量导入白名单按钮事件监听
-document.getElementById('importWhitelist').addEventListener('click', importWhitelist);
-
-// 添加设备类型过滤事件监听
-deviceTypeFilter.addEventListener('change', renderDeviceTable);
-
-// 添加物料编号搜索事件监听
-materialIdSearch.addEventListener('input', renderDeviceTable);
-
-// 初始化
-window.removeDevice = removeDevice;
-window.confirmUnknownDevices = confirmUnknownDevices;
-window.toggleDeviceInfo = toggleDeviceInfo;
-window.toggleDeviceStatus = toggleDeviceStatus;
-
-// 尝试加载设备清单
-async function initDevices() {
-    try {
-        devices = await db.getAllDevices();
-        renderDeviceTable();
-    } catch (error) {
-        console.log('没有找到设备清单，将创建新的:', error.message);
-    }
-}
-
-// 去重函数 - 支持单键或多键组合去重
-function uniqueByKey(arr, keys) {
+// 辅助函数：按指定键去重
+function uniqueByKey(array, keys) {
     const seen = new Set();
-    return arr.filter(item => {
-        // 如果是单键，直接使用该键值；如果是多键，组合成字符串
-        const keyValue = Array.isArray(keys) 
-            ? keys.map(key => item[key]).join('|') 
-            : item[keys];
-        
-        if (seen.has(keyValue)) {
+    return array.filter(item => {
+        const key = keys.map(k => item[k]).join('|');
+        if (seen.has(key)) {
             return false;
         }
-        seen.add(keyValue);
+        seen.add(key);
         return true;
     });
 }
 
-// 初始化设备清单
-initDevices();
+// 初始化应用
+initApp();
+
+// 事件监听
+tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+        switchTab(tab.dataset.tab);
+    });
+});
+
+addDeviceBtn.addEventListener('click', addDevice);
+saveDevicesBtn.addEventListener('click', saveDevices);
+loadDevicesBtn.addEventListener('click', loadDevices);
+selectFolderBtn.addEventListener('click', selectFiles);
+processFilesBtn.addEventListener('click', processFiles);
+exportListBtn.addEventListener('click', exportList);
+
+deviceTypeFilter.addEventListener('change', renderDeviceTable);
+materialIdSearch.addEventListener('input', renderDeviceTable);
+
+// 绑定导出按钮事件
+document.getElementById('exportBlacklist').addEventListener('click', exportBlacklist);
+document.getElementById('exportVulnerableLibrary').addEventListener('click', exportVulnerableLibrary);
+
+// 绑定导入按钮事件
+document.getElementById('importBlacklist').addEventListener('click', importBlacklist);
+document.getElementById('importWhitelist').addEventListener('click', importWhitelist);
