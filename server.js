@@ -34,7 +34,8 @@ async function initDatabase() {
             connectionLimit: 15,
             queueLimit: 50,
             connectTimeout: 5000,
-            idleTimeout: 30000
+            idleTimeout: 30000,
+            charset: 'utf8mb4' // 设置连接字符集，确保中文正常存储
         });
         
         // 测试连接
@@ -52,18 +53,28 @@ async function initDatabase() {
 // API 端点：获取所有设备
 app.get('/api/devices', async (req, res) => {
     try {
-        const [rows] = await pool.execute('SELECT material_id, spare_count, unit, model, remark, description, status FROM devices');
+        // 获取所有设备记录，移除了model字段
+        const [rows] = await pool.execute(
+            'SELECT material_id, spare_count, unit, remark, description, status FROM devices'
+        );
         
-        // 将结果转换为客户端需要的格式
-        const devices = rows.map(row => ({
-            materialId: row.material_id,
-            spareCount: row.spare_count,
-            unit: row.unit,
-            model: row.model,
-            remark: row.remark,
-            description: row.description,
-            status: row.status
-        }));
+        // 将结果转换为客户端需要的格式，并确保每个material_id只返回一条记录
+        // 这里保留每个material_id的最后一条记录，因为最新的记录可能更完整
+        const deviceMap = new Map();
+        rows.forEach(row => {
+            // 使用material_id作为键，后续记录会覆盖前面的，确保保留最新记录
+            deviceMap.set(row.material_id, {
+                materialId: row.material_id,
+                spareCount: row.spare_count,
+                unit: row.unit,
+                remark: row.remark,
+                description: row.description,
+                status: row.status
+            });
+        });
+        
+        // 转换为数组并返回
+        const devices = Array.from(deviceMap.values());
         
         res.json(devices);
     } catch (error) {
@@ -90,26 +101,61 @@ app.post('/api/devices', async (req, res) => {
         try {
             await connection.beginTransaction();
             
-            await connection.query(
-                `INSERT INTO devices (material_id, spare_count, unit, model, remark, description, status) 
-                 VALUES ? 
-                 ON DUPLICATE KEY UPDATE 
-                 spare_count = VALUES(spare_count), 
-                 unit = VALUES(unit), 
-                 model = VALUES(model), 
-                 remark = VALUES(remark), 
-                 description = VALUES(description),
-                 status = VALUES(status)`,
-                [devices.map(device => [
-                    device.materialId, 
-                    device.spareCount, 
-                    device.unit, 
-                    device.model, 
-                    device.remark, 
-                    device.description || null, 
-                    device.status
-                ])]
+            // 先获取当前所有设备的material_id
+            const [currentDevices] = await connection.query(
+                `SELECT material_id FROM devices`
             );
+            const currentMaterialIds = new Set(currentDevices.map(d => d.material_id));
+            
+            // 找出需要删除的设备（存在于数据库中但不存在于请求体中）
+            const devicesToDelete = [];
+            currentMaterialIds.forEach(materialId => {
+                const existsInRequest = devices.some(device => 
+                    device.materialId === materialId
+                );
+                if (!existsInRequest) {
+                    devicesToDelete.push(materialId);
+                }
+            });
+            
+            // 删除不需要的设备
+            if (devicesToDelete.length > 0) {
+                for (const materialId of devicesToDelete) {
+                    await connection.query(
+                        `DELETE FROM devices WHERE material_id = ?`,
+                        [materialId]
+                    );
+                }
+            }
+            
+            // 插入或更新设备
+            for (const device of devices) {
+                // 验证status值，确保其在enum范围内
+                let validStatus = device.status;
+                if (!['白名单', '黑名单'].includes(validStatus)) {
+                    validStatus = '白名单'; // 默认使用白名单
+                    console.log(`设备${device.materialId}的状态值${device.status}无效，已设置为默认值${validStatus}`);
+                }
+                
+                await connection.query(
+                    `INSERT INTO devices (material_id, spare_count, unit, remark, description, status) 
+                     VALUES (?, ?, ?, ?, ?, ?) 
+                     ON DUPLICATE KEY UPDATE 
+                     spare_count = VALUES(spare_count), 
+                     unit = VALUES(unit), 
+                     remark = VALUES(remark), 
+                     description = VALUES(description),
+                     status = VALUES(status)`,
+                    [
+                        device.materialId, 
+                        device.spareCount, 
+                        device.unit, 
+                        device.remark, 
+                        device.description || null, 
+                        validStatus
+                    ]
+                );
+            }
             
             await connection.commit();
             res.json({ success: true });
@@ -154,7 +200,7 @@ app.post('/api/devices/match', async (req, res) => {
         
         // 批量查询设备
         const [rows] = await pool.execute(
-            `SELECT material_id, spare_count, unit, model, remark, description, status 
+            `SELECT material_id, spare_count, unit, remark, description, status 
              FROM devices 
              WHERE material_id IN (?)`,
             [uniqueMaterialIds]
@@ -163,12 +209,10 @@ app.post('/api/devices/match', async (req, res) => {
         // 构建设备映射
         const deviceMap = new Map();
         rows.forEach(row => {
-            const key = `${row.material_id}|${row.model}`;
-            deviceMap.set(key, {
+            deviceMap.set(row.material_id, {
                 materialId: row.material_id,
                 spareCount: row.spare_count,
                 unit: row.unit,
-                model: row.model,
                 remark: row.remark,
                 description: row.description,
                 status: row.status
@@ -180,8 +224,7 @@ app.post('/api/devices/match', async (req, res) => {
         const unmatched = [];
         
         materialIdModelPairs.forEach(pair => {
-            const key = `${pair.materialId}|${pair.model}`;
-            const device = deviceMap.get(key);
+            const device = deviceMap.get(pair.materialId);
             if (device) {
                 matched.push(device);
             } else {

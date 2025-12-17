@@ -183,14 +183,6 @@
                 <input type="text" id="description">
             </div>
             <div class="input-group">
-                 <label>机型:</label>
-                <select id="model">
-                    <option value="系统">系统</option>
-                    <option value="摆渡车">摆渡车</option>
-                    <option value="运输车">运输车</option>
-                    <option value="砖机">砖机</option>
-                    <option value="辅机">辅机</option>
-                </select>
                 <label>备件数:</label>
                 <input type="number" id="spareCount" min="0">
                 <label>单位:</label>
@@ -282,20 +274,19 @@
                 <h3>未识别设备 (请选择是否易损)</h3>
                 <div class="table-container">
                     <table id="unknownTable">
-                        <thead>
-                            <tr>
-                                <th>ERP编号</th>
-                                <th>物料描述</th>
-                                <th>备件数</th>
-                                <th>单位</th>
-                                <th>机型</th>
-                                <th>备注</th>
-                                <th>是否易损</th>
-                            </tr>
-                        </thead>
-                        <tbody id="unknownTableBody">
-                        </tbody>
-                    </table>
+                    <thead>
+                        <tr>
+                            <th>ERP编号</th>
+                            <th>物料描述</th>
+                            <th>备件数</th>
+                            <th>单位</th>
+                            <th>备注</th>
+                            <th>是否易损</th>
+                        </tr>
+                    </thead>
+                    <tbody id="unknownTableBody">
+                    </tbody>
+                </table>
                 </div>
             </div>
             
@@ -305,7 +296,6 @@
                     <table id="resultTable">
                         <thead>
                             <tr>
-                                <th>ERP编号</th>
                                 <th>物料编号</th>
                                 <th>备件数</th>
                                 <th>单位</th>

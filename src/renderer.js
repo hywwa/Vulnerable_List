@@ -1,5 +1,10 @@
 import * as XLSX from 'xlsx-js-style';
 
+// 常量定义
+const MODEL_ORDER = ['系统', '砖机', '摆渡车', '辅机', '运输车']; // 机型排序顺序
+const CONCURRENCY_LIMIT = 10; // 并发处理文件数量限制
+const API_BASE_URL = '/api'; // API 基础 URL
+
 // 全局变量
 let devices = new Map(); // 设备清单，key: 物料编号
 let selectedFiles = []; // 选择的文件
@@ -8,46 +13,83 @@ let vulnerableList = []; // 易损清单结果
 let matchedDevices = []; // 白名单已匹配设备
 let allFiles = []; // 处理的所有文件
 
-// API 基础 URL
-const API_BASE_URL = '/api';
+// DOM元素缓存
+const dom = {
+    // 标签页相关
+    tabs: document.querySelectorAll('.tab'),
+    tabContents: document.querySelectorAll('.tab-content'),
+    
+    // 设备管理相关
+    materialIdInput: document.getElementById('materialId'),
+    descriptionInput: document.getElementById('description'),
+    spareCountInput: document.getElementById('spareCount'),
+    unitInput: document.getElementById('unit'),
+    remarkInput: document.getElementById('remark'),
+    statusSelect: document.getElementById('status'),
+    deviceTypeFilter: document.getElementById('deviceTypeFilter'),
+    materialIdSearch: document.getElementById('materialIdSearch'),
+    addDeviceBtn: document.getElementById('addDevice'),
+    saveDevicesBtn: document.getElementById('saveDevices'),
+    loadDevicesBtn: document.getElementById('loadDevices'),
+    deviceTableBody: document.getElementById('deviceTableBody'),
+    
+    // 文件处理相关
+    selectFolderBtn: document.getElementById('selectFolder'),
+    processFilesBtn: document.getElementById('processFiles'),
+    exportListBtn: document.getElementById('exportList'),
+    fileInfoDiv: document.getElementById('fileInfo'),
+    summaryDiv: document.getElementById('summary'),
+    
+    // 结果展示相关
+    matchedSection: document.getElementById('matchedSection'),
+    matchedTableBody: document.getElementById('matchedTableBody'),
+    unknownSection: document.getElementById('unknownSection'),
+    unknownTableBody: document.getElementById('unknownTableBody'),
+    resultSection: document.getElementById('resultSection'),
+    resultTableBody: document.getElementById('resultTableBody')
+};
 
-// DOM元素
-const tabs = document.querySelectorAll('.tab');
-const tabContents = document.querySelectorAll('.tab-content');
-const materialIdInput = document.getElementById('materialId');
-const descriptionInput = document.getElementById('description');
-const spareCountInput = document.getElementById('spareCount');
-const unitInput = document.getElementById('unit');
-const modelInput = document.getElementById('model');
-const remarkInput = document.getElementById('remark');
-const statusSelect = document.getElementById('status');
-const deviceTypeFilter = document.getElementById('deviceTypeFilter');
-const materialIdSearch = document.getElementById('materialIdSearch');
-const addDeviceBtn = document.getElementById('addDevice');
-const saveDevicesBtn = document.getElementById('saveDevices');
-const loadDevicesBtn = document.getElementById('loadDevices');
-const deviceTableBody = document.getElementById('deviceTableBody');
-const selectFolderBtn = document.getElementById('selectFolder');
-const processFilesBtn = document.getElementById('processFiles');
-const exportListBtn = document.getElementById('exportList');
-const fileInfoDiv = document.getElementById('fileInfo');
-const summaryDiv = document.getElementById('summary');
-const matchedSection = document.getElementById('matchedSection');
-const matchedTableBody = document.getElementById('matchedTableBody');
-const unknownSection = document.getElementById('unknownSection');
-const unknownTableBody = document.getElementById('unknownTableBody');
-const resultSection = document.getElementById('resultSection');
-const resultTableBody = document.getElementById('resultTableBody');
-
-// 初始化：从服务器加载设备清单
+// 初始化：从服务器加载设备清单并添加事件监听器
 function initApp() {
+    // 加载设备清单
     loadDevices();
+    
+    // 添加事件监听器
+    addEventListeners();
+}
+
+// 添加所有事件监听器
+function addEventListeners() {
+    // 标签页切换事件
+    dom.tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            switchTab(tab.dataset.tab);
+        });
+    });
+    
+    // 设备管理事件
+    dom.addDeviceBtn.addEventListener('click', addDevice);
+    dom.saveDevicesBtn.addEventListener('click', saveDevices);
+    dom.loadDevicesBtn.addEventListener('click', loadDevices);
+    dom.deviceTypeFilter.addEventListener('change', renderDeviceTable);
+    dom.materialIdSearch.addEventListener('input', renderDeviceTable);
+    
+    // 文件处理事件
+    dom.selectFolderBtn.addEventListener('click', selectFiles);
+    dom.processFilesBtn.addEventListener('click', processFiles);
+    dom.exportListBtn.addEventListener('click', exportList);
+    
+    // 批量导入/导出事件
+    document.getElementById('importBlacklist').addEventListener('click', importBlacklist);
+    document.getElementById('importWhitelist').addEventListener('click', importWhitelist);
+    document.getElementById('exportBlacklist').addEventListener('click', exportBlacklist);
+    document.getElementById('exportVulnerableLibrary').addEventListener('click', exportVulnerableLibrary);
 }
 
 // 标签页切换
 function switchTab(tabName) {
-    tabs.forEach(tab => tab.classList.remove('active'));
-    tabContents.forEach(content => content.classList.remove('active'));
+    dom.tabs.forEach(tab => tab.classList.remove('active'));
+    dom.tabContents.forEach(content => content.classList.remove('active'));
     
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
     document.getElementById(tabName).classList.add('active');
@@ -56,53 +98,66 @@ function switchTab(tabName) {
 
 
 // 设备清单维护
-function addDevice() {
-    const materialId = materialIdInput.value.trim();
-    const description = descriptionInput.value.trim();
-    const spareCount = parseInt(spareCountInput.value) || 0;
-    const unit = unitInput.value.trim();
-    const model = modelInput.value.trim();
-    const remark = remarkInput.value.trim();
-    const status = statusSelect.value;
+async function addDevice() {
+    const materialId = dom.materialIdInput.value.trim();
+    const description = dom.descriptionInput.value.trim();
+    const spareCount = parseInt(dom.spareCountInput.value) || 0;
+    const unit = dom.unitInput.value.trim();
+    const remark = dom.remarkInput.value.trim();
+    const status = dom.statusSelect.value;
     
     if (!materialId) {
         alert('物料编号不能为空');
         return;
     }
     
-    if (!model) {
-        alert('机型不能为空');
-        return;
-    }
-    
-    // 使用materialId+model作为复合键
-    const compositeKey = `${materialId}|${model}`;
-    
-    devices.set(compositeKey, {
+    // 直接使用materialId作为唯一键，不再使用model
+    devices.set(materialId, {
         materialId,
         description,
         spareCount,
         unit,
-        model,
         remark,
         status
     });
     
     // 清空输入框
-    materialIdInput.value = '';
-    descriptionInput.value = '';
-    spareCountInput.value = '';
-    unitInput.value = '';
-    modelInput.value = '';
-    remarkInput.value = '';
+    dom.materialIdInput.value = '';
+    dom.descriptionInput.value = '';
+    dom.spareCountInput.value = '';
+    dom.unitInput.value = '';
+    dom.remarkInput.value = '';
     
+    // 重新渲染设备表格
     renderDeviceTable();
+    
+    // 保存到数据库
+    try {
+        const devicesArray = Array.from(devices.values());
+        const response = await fetch(`${API_BASE_URL}/devices`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(devicesArray)
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            alert('设备添加成功');
+        } else {
+            alert('设备保存失败: ' + (result.error || '未知错误'));
+        }
+    } catch (error) {
+        console.error('保存设备清单失败:', error);
+        alert('设备保存失败: ' + error.message);
+    }
 }
 
 function renderDeviceTable() {
     // 获取当前过滤条件
-    const filterType = deviceTypeFilter.value;
-    const searchTerm = materialIdSearch.value.trim().toLowerCase();
+    const filterType = dom.deviceTypeFilter.value;
+    const searchTerm = dom.materialIdSearch.value.trim().toLowerCase();
     
     // 过滤设备
     const filteredDevices = [];
@@ -135,14 +190,13 @@ function renderDeviceTable() {
             </tr>
         `;
     } else {
-        // 白名单和全部设备显示完整8列表头
+        // 白名单和全部设备显示完整7列表头（移除了机型列）
         thead.innerHTML = `
             <tr>
                 <th>物料编号</th>
                 <th>物料描述</th>
                 <th>备件数</th>
                 <th>单位</th>
-                <th>机型</th>
                 <th>备注</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -151,8 +205,7 @@ function renderDeviceTable() {
     }
     
     // 清空表格内容
-    const tbody = deviceTable.querySelector('tbody');
-    tbody.innerHTML = '';
+    dom.deviceTableBody.innerHTML = '';
     
     // 渲染白名单设备
     if (whiteListDevices.length > 0) {
@@ -163,7 +216,6 @@ function renderDeviceTable() {
                 <td>${device.description || ''}</td>
                 <td>${device.spareCount}</td>
                 <td>${device.unit}</td>
-                <td>${device.model}</td>
                 <td>${device.remark}</td>
                 <td>
                     <span class="status-badge status-white">
@@ -171,15 +223,20 @@ function renderDeviceTable() {
                     </span>
                 </td>
                 <td>
-                    <button onclick="removeDevice('${device.materialId}|${device.model}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
+                    <button class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
                         删除
                     </button>
-                    <button onclick="toggleDeviceStatus('${device.materialId}|${device.model}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
+                    <button class="secondary" style="padding: 5px 10px; font-size: 12px;">
                         改为黑名单
                     </button>
                 </td>
             `;
-            tbody.appendChild(row);
+            dom.deviceTableBody.appendChild(row);
+            
+            // 直接使用materialId作为唯一键
+            const buttons = row.querySelectorAll('button');
+            buttons[0].addEventListener('click', () => removeDevice(device.materialId));
+            buttons[1].addEventListener('click', () => toggleDeviceStatus(device.materialId));
         });
     }
     
@@ -196,15 +253,20 @@ function renderDeviceTable() {
                     </span>
                 </td>
                 <td>
-                    <button onclick="removeDevice('${device.materialId}|${device.model}')" class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
+                    <button class="danger" style="padding: 5px 10px; font-size: 12px; margin-right: 5px;">
                         删除
                     </button>
-                    <button onclick="toggleDeviceStatus('${device.materialId}|${device.model}')" class="secondary" style="padding: 5px 10px; font-size: 12px;">
+                    <button class="secondary" style="padding: 5px 10px; font-size: 12px;">
                         改为白名单
                     </button>
                 </td>
             `;
-            tbody.appendChild(row);
+            dom.deviceTableBody.appendChild(row);
+            
+            // 直接使用materialId作为唯一键
+            const buttons = row.querySelectorAll('button');
+            buttons[0].addEventListener('click', () => removeDevice(device.materialId));
+            buttons[1].addEventListener('click', () => toggleDeviceStatus(device.materialId));
         });
     }
     
@@ -217,30 +279,54 @@ function renderDeviceTable() {
         } else if (filterType === '黑名单') {
             emptyMessage = '暂无黑名单设备数据';
         }
-        const colSpan = filterType === '黑名单' ? 4 : 8;
+        const colSpan = filterType === '黑名单' ? 4 : 7;
         emptyRow.innerHTML = `
             <td colspan="${colSpan}" style="text-align: center; padding: 20px; color: #999;">
                 ${emptyMessage}
             </td>
         `;
-        tbody.appendChild(emptyRow);
+        dom.deviceTableBody.appendChild(emptyRow);
     }
 }
 
-async function removeDevice(compositeKey) {
+async function removeDevice(materialId) {
     try {
-        devices.delete(compositeKey);
+        // 从内存中删除设备
+        devices.delete(materialId);
+        
+        // 重新渲染设备表格
         renderDeviceTable();
+        
+        // 保存更新后的设备清单到数据库
+        const devicesArray = Array.from(devices.values());
+        const response = await fetch(`${API_BASE_URL}/devices`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(devicesArray)
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            alert('设备删除成功');
+        } else {
+            console.error('保存设备清单失败:', result.error || '未知错误');
+            alert('删除设备失败: ' + (result.error || '未知错误'));
+        }
     } catch (error) {
         console.error('删除设备失败:', error);
         alert('删除设备失败: ' + error.message);
     }
 }
 
+// 暴露到全局作用域，供HTML onclick事件使用
+window.removeDevice = removeDevice;
+
 // 切换设备状态（白名单 ↔ 黑名单）
-async function toggleDeviceStatus(compositeKey) {
+async function toggleDeviceStatus(materialId) {
     try {
-        const device = devices.get(compositeKey);
+        const device = devices.get(materialId);
         if (!device) {
             alert('未找到该设备');
             return;
@@ -256,17 +342,36 @@ async function toggleDeviceStatus(compositeKey) {
         };
         
         // 更新内存中的设备清单
-        devices.set(compositeKey, updatedDevice);
+        devices.set(materialId, updatedDevice);
         
         // 重新渲染设备表格
         renderDeviceTable();
         
-        alert(`设备已从${device.status}改为${newStatus}`);
+        // 保存到数据库
+        const devicesArray = Array.from(devices.values());
+        const response = await fetch(`${API_BASE_URL}/devices`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(devicesArray)
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            alert(`设备已从${device.status}改为${newStatus}`);
+        } else {
+            console.error('保存设备清单失败:', result.error || '未知错误');
+            alert(`设备状态已更改，但保存失败: ${result.error || '未知错误'}`);
+        }
     } catch (error) {
         console.error('切换设备状态失败:', error);
         alert('切换设备状态失败: ' + error.message);
     }
 }
+
+// 暴露到全局作用域，供HTML onclick事件使用
+window.toggleDeviceStatus = toggleDeviceStatus;
 
 async function saveDevices() {
     try {
@@ -300,11 +405,12 @@ async function loadDevices() {
         
         const devicesArray = await response.json();
         
-        // 将设备数组转换为 Map 对象
+        // 将设备数组转换为 Map 对象，直接使用materialId作为唯一键
+        // 后端已经确保每个materialId只返回一条记录，所以这里可以直接设置
         const devicesMap = new Map();
         devicesArray.forEach(device => {
-            const compositeKey = `${device.materialId}|${device.model}`;
-            devicesMap.set(compositeKey, device);
+            // 直接设置，后端已经确保每个materialId唯一
+            devicesMap.set(device.materialId, device);
         });
         
         devices = devicesMap;
@@ -323,13 +429,13 @@ function selectFiles() {
     input.multiple = true;
     input.accept = '.xlsx,.xls';
     input.onchange = (e) => {
-        selectedFiles = Array.from(e.target.files);
-        if (selectedFiles.length > 0) {
-            fileInfoDiv.innerHTML = `<strong>已选择文件:</strong> ${selectedFiles.length} 个<br>
-                                     ${selectedFiles.map(file => `• ${file.name}`).join('<br>')}`;
-            fileInfoDiv.style.display = 'block';
-        }
-    };
+            selectedFiles = Array.from(e.target.files);
+            if (selectedFiles.length > 0) {
+                dom.fileInfoDiv.innerHTML = `<strong>已选择文件:</strong> ${selectedFiles.length} 个<br>
+                                         ${selectedFiles.map(file => `• ${file.name}`).join('<br>')}`;
+                dom.fileInfoDiv.style.display = 'block';
+            }
+        };
     input.click();
 }
 
@@ -349,11 +455,10 @@ async function processFiles() {
         
         const devicesArray = await response.json();
         
-        // 将设备数组转换为 Map 对象
+        // 将设备数组转换为 Map 对象，直接使用materialId作为唯一键
         const devicesMap = new Map();
         devicesArray.forEach(device => {
-            const compositeKey = `${device.materialId}|${device.model}`;
-            devicesMap.set(compositeKey, device);
+            devicesMap.set(device.materialId, device);
         });
         
         devices = devicesMap;
@@ -367,6 +472,8 @@ async function processFiles() {
     unknownDevices = [];
     vulnerableList = [];
     matchedDevices = [];
+    
+    // 不再在处理文件时进行去重，只在最后结果生成时进行一次去重
     
     let totalFiles = selectedFiles.length;
     let processedFiles = 0;
@@ -385,8 +492,7 @@ async function processFiles() {
         /material_id/i
     ];
     
-    // 并发控制：限制同时处理的文件数量不超过10个
-    const CONCURRENCY_LIMIT = 10;
+    // 并发控制：使用常量控制同时处理的文件数量
     const processResults = [];
     
     // 并发处理函数
@@ -490,51 +596,50 @@ async function processFiles() {
                     
                     deviceData.forEach(deviceItem => {
                         const materialId = deviceItem.erpCode;
-                        // 使用materialId+model作为复合键查找设备
-                        const compositeKey = `${materialId}|${model}`;
-                        const device = devices.get(compositeKey);
+                        // 直接使用materialId作为唯一键查找设备
+                        const device = devices.get(materialId);
                         
                         if (device) {
-                            // 设备已存在且机型匹配 - 先检查黑名单，再检查白名单
+                            // 设备已存在 - 先检查黑名单，再检查白名单，确保所有设备都能被处理
                             if (device.status === '黑名单') {
                                 // 黑名单优先级更高，直接标记为匹配黑名单
                                 fileResults.matchedBlack++;
                             } else if (device.status === '白名单') {
-                                // 白名单设备，添加到易损清单
+                                // 白名单设备，直接添加到易损清单
                                 fileResults.vulnerable.push({
                                     erpCode: materialId,
                                     ...device,
                                     model: model // 使用根据文件名判断的机型，而不是设备清单中的机型
                                 });
                                 fileResults.matchedWhite++;
-                            }
-                        } else {
-                            // 检查是否存在相同materialId但不同model的设备
-                            let hasDifferentModel = false;
-                            for (const [key, dev] of devices.entries()) {
-                                if (dev.materialId === materialId && dev.model !== model) {
-                                    hasDifferentModel = true;
-                                    break;
-                                }
-                            }
-                            
-                            if (hasDifferentModel) {
-                                // 存在相同materialId但不同model的设备，标记为匹配黑名单
-                                fileResults.matchedBlack++;
                             } else {
-                                // 完全未匹配，添加到未知设备
+                                // 状态异常的设备，添加到未知设备列表
+                                console.log(`发现状态异常设备: ${materialId}, 状态: ${device.status}`);
                                 fileResults.unknown.push({
                                     erpCode: materialId,
-                                    materialId: '',
-                                    description: deviceItem.description,
-                                    spareCount: 0,
-                                    unit: deviceItem.unit,
+                                    materialId: device.materialId,
+                                    description: device.description || deviceItem.description,
+                                    spareCount: device.spareCount || 0,
+                                    unit: device.unit || deviceItem.unit,
                                     model: model, // 根据文件名判断的机型
-                                    remark: '',
+                                    remark: device.remark || '',
                                     isVulnerable: true
                                 });
                                 fileResults.unmatched++;
                             }
+                        } else {
+                            // 设备不存在，添加到未知设备
+                            fileResults.unknown.push({
+                                erpCode: materialId,
+                                materialId: '',
+                                description: deviceItem.description,
+                                spareCount: 0,
+                                unit: deviceItem.unit,
+                                model: model, // 根据文件名判断的机型
+                                remark: '',
+                                isVulnerable: true
+                            });
+                            fileResults.unmatched++;
                         }
                     });
                     
@@ -559,8 +664,12 @@ async function processFiles() {
     const results = processResults;
     
     // 合并结果
+    let totalVulnerableBeforeMerge = 0;
+    let totalUnknownBeforeMerge = 0;
     results.forEach(result => {
         if (result) {
+            totalVulnerableBeforeMerge += result.vulnerable.length;
+            totalUnknownBeforeMerge += result.unknown.length;
             vulnerableList.push(...result.vulnerable);
             unknownDevices.push(...result.unknown);
             matchedWhite += result.matchedWhite;
@@ -569,9 +678,70 @@ async function processFiles() {
         }
     });
     
-    // 去重处理 - 按照机型+ERP编号组合去重，同一机型内的相同ERP编号只保留一个
+    console.log(`合并结果前：`);
+    console.log(`  单个文件易损设备总数：${totalVulnerableBeforeMerge}`);
+    console.log(`  单个文件未知设备总数：${totalUnknownBeforeMerge}`);
+    console.log(`  合并后易损设备总数：${vulnerableList.length}`);
+    console.log(`  合并后未知设备总数：${unknownDevices.length}`);
+    console.log(`  匹配白名单数量：${matchedWhite}`);
+    console.log(`  匹配黑名单数量：${matchedBlack}`);
+    console.log(`  未匹配数量：${unmatched}`);
+    
+    // 去重处理 - 未知设备按机型和ERP编号去重，易损清单只按ERP编号去重
+    const unknownBeforeDedup = unknownDevices.length;
     unknownDevices = uniqueByKey(unknownDevices, ['model', 'erpCode']);
-    vulnerableList = uniqueByKey(vulnerableList, ['model', 'erpCode']);
+    console.log(`未知设备去重：${unknownBeforeDedup} → ${unknownDevices.length}（去重${unknownBeforeDedup - unknownDevices.length}个）`);
+    
+    // 直接使用Set来实现去重，只保留唯一的ERP编号
+    // 这里必须确保去重逻辑正确执行，解决跨文件重复的问题
+    const vulnerableBeforeDedup = vulnerableList.length;
+    const seenErpCodes = new Set();
+    vulnerableList = vulnerableList.filter(device => {
+        // 使用erpCode作为唯一标识进行去重
+        const erpCode = device.erpCode;
+        if (seenErpCodes.has(erpCode)) {
+            console.log(`易损清单去重：重复的物料编号 ${erpCode}，已去重`);
+            return false;
+        }
+        seenErpCodes.add(erpCode);
+        return true;
+    });
+    console.log(`易损清单去重：${vulnerableBeforeDedup} → ${vulnerableList.length}（去重${vulnerableBeforeDedup - vulnerableList.length}个）`);
+    
+    // 统计各机型设备数量
+    const devicesByModel = new Map();
+    vulnerableList.forEach(device => {
+        const model = device.model;
+        devicesByModel.set(model, (devicesByModel.get(model) || 0) + 1);
+    });
+    console.log('易损清单各机型数量：');
+    devicesByModel.forEach((count, model) => {
+        console.log(`  ${model}：${count}个`);
+    });
+    
+    // 再次验证去重结果，确保没有重复
+    const finalSeenErpCodes = new Set();
+    let hasDuplicates = false;
+    vulnerableList.forEach(device => {
+        if (finalSeenErpCodes.has(device.erpCode)) {
+            console.error(`严重错误：去重后仍有重复的物料编号: ${device.erpCode}`);
+            hasDuplicates = true;
+        }
+        finalSeenErpCodes.add(device.erpCode);
+    });
+    
+    if (!hasDuplicates) {
+        console.log('去重成功，易损清单中没有重复的物料编号');
+    } else {
+        // 如果仍有重复，强制再次去重
+        console.log('发现重复，正在进行强制去重');
+        const finalUniqueSet = new Map();
+        vulnerableList.forEach(device => {
+            finalUniqueSet.set(device.erpCode, device);
+        });
+        vulnerableList = Array.from(finalUniqueSet.values());
+        console.log('强制去重完成，当前易损清单数量:', vulnerableList.length);
+    }
     
     // 处理白名单匹配设备 - 从易损清单中提取，只显示4列
     matchedDevices = vulnerableList.map(device => ({
@@ -581,7 +751,7 @@ async function processFiles() {
     }));
     
     // 更新统计信息
-    summaryDiv.innerHTML = `
+    dom.summaryDiv.innerHTML = `
         <strong>处理结果:</strong><br>
         - 总文件数: ${totalFiles} 个<br>
         - 总设备数: ${totalDevices} 个<br>
@@ -590,55 +760,31 @@ async function processFiles() {
         - 已匹配白名单设备(去重后): ${matchedDevices.length} 个<br>
         - 未识别设备: ${unknownDevices.length} 个 (去重后)<br>
     `;
-    summaryDiv.style.display = 'block';
+    dom.summaryDiv.style.display = 'block';
     
     // 显示白名单匹配设备
     if (matchedDevices.length > 0) {
-        matchedSection.style.display = 'block';
+        dom.matchedSection.style.display = 'block';
         renderMatchedTable();
     } else {
-        matchedSection.style.display = 'none';
+        dom.matchedSection.style.display = 'none';
     }
     
     // 显示未识别设备
     if (unknownDevices.length > 0) {
-        unknownSection.style.display = 'block';
+        dom.unknownSection.style.display = 'block';
         renderUnknownTable();
     } else {
-        unknownSection.style.display = 'none';
+        dom.unknownSection.style.display = 'none';
         renderResultTable();
-        exportListBtn.disabled = false;
+        dom.exportListBtn.disabled = false;
     }
     
-    resultSection.style.display = 'block';
+    dom.resultSection.style.display = 'block';
 }
 
 function renderUnknownTable() {
-    unknownTableBody.innerHTML = '';
-    
-    // 添加多选样式
-    const style = document.createElement('style');
-    style.textContent = `
-        /* 增强多选下拉框的选中效果 */
-        select[multiple] option:checked {
-            background-color: #3498db !important;
-            color: white !important;
-        }
-        select[multiple] {
-            font-size: 14px;
-            font-family: Arial, sans-serif;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 5px;
-            outline: none;
-            cursor: pointer;
-        }
-        select[multiple]:focus {
-            border-color: #3498db;
-            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
-        }
-    `;
-    document.head.appendChild(style);
+    dom.unknownTableBody.innerHTML = '';
     
     unknownDevices.forEach((device, index) => {
         const row = document.createElement('tr');
@@ -647,16 +793,6 @@ function renderUnknownTable() {
             <td><input type="text" id="materialId_${index}" value="${device.description || device.erpCode}" placeholder="物料描述" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 300px; min-width: 200px;"></td>
             <td><input type="number" id="spareCount_${index}" value="${device.spareCount}" min="0" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 80px;"></td>
             <td><input type="text" id="unit_${index}" value="${device.unit}" placeholder="单位" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 80px;"></td>
-            <td>
-                <select id="model_${index}" multiple="multiple" size="5" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 150px; height: auto;">
-                    <option value="系统" ${device.model === '系统' ? 'selected' : ''}>系统</option>
-                    <option value="摆渡车" ${device.model === '摆渡车' ? 'selected' : ''}>摆渡车</option>
-                    <option value="运输车" ${device.model === '运输车' ? 'selected' : ''}>运输车</option>
-                    <option value="砖机" ${device.model === '砖机' ? 'selected' : ''}>砖机</option>
-                    <option value="辅机" ${device.model === '辅机' ? 'selected' : ''}>辅机</option>
-                </select>
-                <small style="display: ${device.isVulnerable ? 'block' : 'none'}; color: #666; margin-top: 5px;">可按住Ctrl键多选</small>
-            </td>
             <td><input type="text" id="remark_${index}" value="${device.remark}" placeholder="备注" style="display: ${device.isVulnerable ? 'block' : 'none'}; width: 120px;"></td>
             <td>
                 <select id="isVulnerable_${index}" onchange="toggleDeviceInfo(${index}, this.value)" style="width: 80px;">
@@ -665,19 +801,19 @@ function renderUnknownTable() {
                 </select>
             </td>
         `;
-        unknownTableBody.appendChild(row);
+        dom.unknownTableBody.appendChild(row);
     });
     
     // 添加确认按钮
     const confirmRow = document.createElement('tr');
     confirmRow.innerHTML = `
-        <td colspan="7" style="text-align: center;">
+        <td colspan="6" style="text-align: center;">
             <button onclick="confirmUnknownDevices()" style="margin-top: 10px;">
                 确认选择
             </button>
         </td>
     `;
-    unknownTableBody.appendChild(confirmRow);
+    dom.unknownTableBody.appendChild(confirmRow);
 }
 
 // 切换设备信息输入框显示
@@ -686,9 +822,11 @@ function toggleDeviceInfo(index, isVulnerable) {
     document.getElementById(`materialId_${index}`).style.display = show ? 'block' : 'none';
     document.getElementById(`spareCount_${index}`).style.display = show ? 'block' : 'none';
     document.getElementById(`unit_${index}`).style.display = show ? 'block' : 'none';
-    document.getElementById(`model_${index}`).style.display = show ? 'block' : 'none';
     document.getElementById(`remark_${index}`).style.display = show ? 'block' : 'none';
 }
+
+// 暴露到全局作用域，供HTML onclick事件使用
+window.toggleDeviceInfo = toggleDeviceInfo;
 
 function confirmUnknownDevices() {
     // 更新未知设备信息并处理
@@ -703,15 +841,6 @@ function confirmUnknownDevices() {
         
         // 使用ERP编号作为materialId
         const materialId = erpCode;
-        
-        // 获取多选的机型
-        const modelSelect = document.getElementById(`model_${i}`);
-        const selectedModels = Array.from(modelSelect.selectedOptions).map(option => option.value);
-        
-        // 如果没有选择机型，使用默认机型
-        if (selectedModels.length === 0) {
-            selectedModels.push(device.model || '');
-        }
         
         // 验证逻辑
         if (isVulnerable) {
@@ -728,96 +857,109 @@ function confirmUnknownDevices() {
                 alert(`第${i+1}行：单位不能为空`);
                 return;
             }
-            if (selectedModels.some(model => !model)) {
-                alert(`第${i+1}行：机型不能为空`);
-                return;
-            }
         }
         
-        // 保存设备原始机型（文件机型）
-        const originalFileModel = device.model;
+        // 根据是否易损创建设备对象
+        const deviceObj = {
+            materialId,
+            description,
+            status: isVulnerable ? '白名单' : '黑名单' // 确保status值有效
+        };
         
-        // 为每个选中的机型创建一条记录
-        selectedModels.forEach(selectedModel => {
-            // 使用materialId+selectedModel作为复合键
-            const compositeKey = `${materialId}|${selectedModel}`;
-            
-            // 根据是否易损创建设备对象
-            const deviceObj = {
-                materialId,
-                description,
-                status: isVulnerable ? '白名单' : '黑名单'
-            };
-            
-            // 如果是易损，需要完整字段
-            if (isVulnerable) {
-                deviceObj.spareCount = spareCount;
-                deviceObj.unit = unit;
-                deviceObj.model = selectedModel;
-                deviceObj.remark = remark;
-            } else {
-                // 选择否的情况：只需要编号和描述
-                deviceObj.spareCount = 0;
-                deviceObj.unit = '';
-                deviceObj.model = selectedModel; // 保留机型，用于复合键
-                deviceObj.remark = '';
-            }
-            
-            // 添加到设备清单
-            devices.set(compositeKey, deviceObj);
-            
-            // 如果是易损，并且机型与文件机型匹配，添加到结果
-            if (isVulnerable && selectedModel === originalFileModel) {
+        // 如果是易损，需要完整字段
+        if (isVulnerable) {
+            deviceObj.spareCount = spareCount;
+            deviceObj.unit = unit;
+            deviceObj.remark = remark;
+        } else {
+            // 选择否的情况：只需要编号和描述
+            deviceObj.spareCount = 0;
+            deviceObj.unit = '';
+            deviceObj.remark = '';
+        }
+        
+        // 直接使用materialId作为唯一键添加到设备清单
+        devices.set(materialId, deviceObj);
+        
+        // 如果是易损，添加到结果
+        if (isVulnerable) {
+            // 检查该物料编号是否已经存在于易损清单中
+            const existingIndex = vulnerableList.findIndex(item => item.erpCode === device.erpCode);
+            if (existingIndex === -1) {
                 vulnerableList.push({
                     erpCode: device.erpCode,
                     materialId,
                     description,
                     spareCount,
                     unit,
-                    model: selectedModel,
                     remark,
                     status: '白名单'
                 });
             }
-        });
+        }
     }
     
     // 保存更新后的设备清单
     saveDevices();
     
     // 隐藏未知设备区域
-    unknownSection.style.display = 'none';
+    dom.unknownSection.style.display = 'none';
+    
+    // 使用Map实现严格去重，确保易损清单中物料编号唯一
+    const uniqueDevicesMap = new Map();
+    vulnerableList.forEach(device => {
+        uniqueDevicesMap.set(device.erpCode, device);
+    });
+    vulnerableList = Array.from(uniqueDevicesMap.values());
+    
+    console.log('未知设备处理后，易损清单去重完成，当前数量:', vulnerableList.length);
     
     // 显示结果
     renderResultTable();
-    exportListBtn.disabled = false;
+    dom.exportListBtn.disabled = false;
 }
 
+// 暴露到全局作用域，供HTML onclick事件使用
+window.confirmUnknownDevices = confirmUnknownDevices;
+
 function renderMatchedTable() {
-    matchedTableBody.innerHTML = '';
+    dom.matchedTableBody.innerHTML = '';
     
     // 更新标题，显示总数
-    const matchedSection = document.getElementById('matchedSection');
-    const h3 = matchedSection.querySelector('h3');
+    const h3 = dom.matchedSection.querySelector('h3');
     if (h3) {
         h3.textContent = `白名单已匹配设备 (共 ${matchedDevices.length} 个)`;
     }
     
-    matchedDevices.forEach(device => {
+    // 按机型排序匹配设备
+    const sortedMatchedDevices = [...matchedDevices].sort((a, b) => {
+        const aIndex = MODEL_ORDER.indexOf(a.model);
+        const bIndex = MODEL_ORDER.indexOf(b.model);
+        return aIndex - bIndex;
+    });
+    
+    sortedMatchedDevices.forEach(device => {
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${device.erpCode}</td>
             <td>${device.description}</td>
             <td>${device.model}</td>
         `;
-        matchedTableBody.appendChild(row);
+        dom.matchedTableBody.appendChild(row);
     });
 }
 
 function renderResultTable() {
-    resultTableBody.innerHTML = '';
+    dom.resultTableBody.innerHTML = '';
     
-    vulnerableList.forEach(device => {
+    // 按机型排序易损清单
+    const sortedVulnerableList = [...vulnerableList].sort((a, b) => {
+        const aIndex = MODEL_ORDER.indexOf(a.model);
+        const bIndex = MODEL_ORDER.indexOf(b.model);
+        return aIndex - bIndex;
+    });
+    
+    sortedVulnerableList.forEach(device => {
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${device.erpCode}</td>
@@ -826,7 +968,7 @@ function renderResultTable() {
             <td>${device.model}</td>
             <td>${device.remark}</td>
         `;
-        resultTableBody.appendChild(row);
+        dom.resultTableBody.appendChild(row);
     });
 }
 
@@ -838,16 +980,68 @@ async function exportList() {
     }
     
     try {
+        console.log('开始导出易损清单，原始数据数量:', vulnerableList.length);
+        
+        // 使用统一的机型排序顺序常量
+        
+        // 第一步：使用Map进行严格去重，确保每个物料编号只出现一次
+        const uniqueDevicesMap = new Map();
+        vulnerableList.forEach((device, index) => {
+            const materialId = device.erpCode;
+            if (uniqueDevicesMap.has(materialId)) {
+                console.log(`导出去重：发现重复物料编号 ${materialId}，已忽略重复项（第${index+1}条）`);
+                return;
+            }
+            uniqueDevicesMap.set(materialId, device);
+        });
+        
+        let uniqueVulnerableList = Array.from(uniqueDevicesMap.values());
+        console.log('第一步去重后数据数量:', uniqueVulnerableList.length);
+        
+        // 第二步：再次验证去重结果，确保没有重复
+        const finalSeenIds = new Set();
+        let hasDuplicates = false;
+        uniqueVulnerableList.forEach((device, index) => {
+            if (finalSeenIds.has(device.erpCode)) {
+                console.error(`严重错误：去重后仍有重复物料编号 ${device.erpCode}（第${index+1}条）`);
+                hasDuplicates = true;
+            }
+            finalSeenIds.add(device.erpCode);
+        });
+        
+        if (hasDuplicates) {
+            console.error('去重失败，尝试第三次强制去重');
+            // 第三次强制去重
+            const finalMap = new Map();
+            uniqueVulnerableList.forEach(device => {
+                finalMap.set(device.erpCode, device);
+            });
+            uniqueVulnerableList = Array.from(finalMap.values());
+            console.log('第三次去重后数据数量:', uniqueVulnerableList.length);
+        }
+        
+        console.log('导出前去重完成，最终数据数量:', uniqueVulnerableList.length);
+        
+        // 按机型排序易损清单
+        const sortedVulnerableList = [...uniqueVulnerableList].sort((a, b) => {
+            const aIndex = MODEL_ORDER.indexOf(a.model);
+            const bIndex = MODEL_ORDER.indexOf(b.model);
+            return aIndex - bIndex;
+        });
+        
         // 准备导出数据，添加序号
-        const dataRows = vulnerableList.map((device, index) => [
-            index + 1, // 序号
-            device.erpCode, // 物料号
-            device.description, // 物料描述
-            device.model, // 机型
-            device.spareCount, // 建议备件数量
-            device.unit, // 单位
-            device.remark // 备注
-        ]);
+        const dataRows = sortedVulnerableList.map((device, index) => {
+            console.log(`导出数据行 ${index+1}: 物料编号=${device.erpCode}, 机型=${device.model}`);
+            return [
+                index + 1, // 序号
+                device.erpCode, // 物料号（ERP和物料编号是同一个东西）
+                device.description, // 物料描述
+                device.model, // 机型
+                device.spareCount, // 建议备件数量
+                device.unit, // 单位
+                device.remark // 备注
+            ];
+        });
         
         // 创建包含标题和表头的完整数据
         const exportData = [
@@ -956,7 +1150,7 @@ async function exportList() {
         
         // 生成Excel文件并下载
         XLSX.writeFile(workbook, '易损件清单.xlsx');
-        alert('易损清单导出成功！');
+        alert(`易损清单导出成功！共导出 ${uniqueVulnerableList.length} 个唯一设备。`);
     } catch (error) {
         console.error('导出易损清单失败:', error);
         alert('导出易损清单失败: ' + error.message);
@@ -1235,19 +1429,33 @@ async function importBlacklist() {
                 return;
             }
             
-            // 批量保存设备
+            // 批量保存设备，遇到重复物料编号直接跳过
+            let importedCount = 0;
             blacklistDevices.forEach(device => {
-                const compositeKey = `${device.materialId}|${device.model}`;
-                devices.set(compositeKey, device);
+                // 确保status值有效
+                device.status = '黑名单';
+                
+                // 直接使用materialId作为唯一键
+                if (!devices.has(device.materialId)) {
+                    devices.set(device.materialId, device);
+                    importedCount++;
+                } else {
+                    console.log(`跳过重复物料编号: ${device.materialId}`);
+                }
             });
             
-            // 保存到本地存储
-            saveDevicesToStorage();
+            // 更新成功导入数量
+            const successMessage = importedCount > 0 
+                ? `成功导入 ${importedCount} 条黑名单设备，跳过 ${blacklistDevices.length - importedCount} 条重复设备`
+                : '未导入任何设备，所有物料编号均已存在';
+            
+            // 保存设备清单
+            saveDevices();
             
             // 重新渲染设备表格
             renderDeviceTable();
             
-            alert(`成功导入 ${blacklistDevices.length} 条黑名单设备`);
+            alert(successMessage);
         };
         input.click();
     } catch (error) {
@@ -1357,19 +1565,35 @@ async function importWhitelist() {
                 return;
             }
             
-            // 批量保存设备
+            // 批量保存设备，遇到重复物料编号直接跳过
+            let importedCount = 0;
             whitelistDevices.forEach(device => {
-                const compositeKey = `${device.materialId}|${device.model}`;
-                devices.set(compositeKey, device);
+                // 确保status值有效
+                if (!['白名单', '黑名单'].includes(device.status)) {
+                    device.status = '白名单'; // 默认使用白名单
+                }
+                
+                // 直接使用materialId作为唯一键
+                if (!devices.has(device.materialId)) {
+                    devices.set(device.materialId, device);
+                    importedCount++;
+                } else {
+                    console.log(`跳过重复物料编号: ${device.materialId}`);
+                }
             });
             
-            // 保存到本地存储
-            saveDevicesToStorage();
+            // 保存设备清单
+            saveDevices();
             
             // 重新渲染设备表格
             renderDeviceTable();
             
-            alert(`成功导入 ${whitelistDevices.length} 条白名单设备`);
+            // 更新成功导入数量
+            const successMessage = importedCount > 0 
+                ? `成功导入 ${importedCount} 条白名单设备，跳过 ${whitelistDevices.length - importedCount} 条重复设备`
+                : '未导入任何设备，所有物料编号均已存在';
+            
+            alert(successMessage);
         };
         input.click();
     } catch (error) {
@@ -1394,22 +1618,25 @@ function uniqueByKey(array, keys) {
 // 初始化应用
 initApp();
 
-// 事件监听
-tabs.forEach(tab => {
+// 事件监听（已在initApp函数中添加，此处代码冗余，建议删除）
+// 如需保留，应使用dom.xxx形式：
+/*
+dom.tabs.forEach(tab => {
     tab.addEventListener('click', () => {
         switchTab(tab.dataset.tab);
     });
 });
 
-addDeviceBtn.addEventListener('click', addDevice);
-saveDevicesBtn.addEventListener('click', saveDevices);
-loadDevicesBtn.addEventListener('click', loadDevices);
-selectFolderBtn.addEventListener('click', selectFiles);
-processFilesBtn.addEventListener('click', processFiles);
-exportListBtn.addEventListener('click', exportList);
+dom.addDeviceBtn.addEventListener('click', addDevice);
+dom.saveDevicesBtn.addEventListener('click', saveDevices);
+dom.loadDevicesBtn.addEventListener('click', loadDevices);
+dom.selectFolderBtn.addEventListener('click', selectFiles);
+dom.processFilesBtn.addEventListener('click', processFiles);
+dom.exportListBtn.addEventListener('click', exportList);
 
-deviceTypeFilter.addEventListener('change', renderDeviceTable);
-materialIdSearch.addEventListener('input', renderDeviceTable);
+dom.deviceTypeFilter.addEventListener('change', renderDeviceTable);
+dom.materialIdSearch.addEventListener('input', renderDeviceTable);
+*/
 
 // 绑定导出按钮事件
 document.getElementById('exportBlacklist').addEventListener('click', exportBlacklist);
